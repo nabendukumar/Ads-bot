@@ -18,3 +18,11 @@ expertMode = true
 [postMerge]
 path = "scripts/post-merge.sh"
 timeoutMs = 20000
+
+[userenv]
+
+[userenv.shared]
+ADMIN_ID = "8493051039"
+API_ID = "35744798"
+BOT_USERNAME = "@LuciAdsBot"
+FORCE_JOIN_GROUP = "0"
