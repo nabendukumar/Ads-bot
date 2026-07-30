@@ -1,4 +1,4 @@
-modules = ["nodejs-24"]
+modules = ["nodejs-24", "python-3.11"]
 
 [deployment]
 router = "application"
@@ -10,6 +10,23 @@ env = { "CI" = "true" }
 
 [workflows]
 runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Luci Ads Bot"
+
+[[workflows.workflow]]
+name = "Luci Ads Bot"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd artifacts/api-server/bot && DATABASE_URL=$DATABASE_URL BOT_TOKEN=$BOT_TOKEN API_ID=$API_ID API_HASH=$API_HASH LOG_BOT_TOKEN=$LOG_BOT_TOKEN ADMIN_ID=$ADMIN_ID BOT_USERNAME=$BOT_USERNAME python main.py"
 
 [agent]
 stack = "PNPM_WORKSPACE"
@@ -26,3 +43,7 @@ ADMIN_ID = "8493051039"
 API_ID = "35744798"
 BOT_USERNAME = "@LuciAdsBot"
 FORCE_JOIN_GROUP = "0"
+
+[nix]
+channel = "stable-25_05"
+packages = ["cargo", "libiconv", "openssl", "rustc"]
