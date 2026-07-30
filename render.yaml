@@ -1,0 +1,32 @@
+services:
+  - type: worker
+    name: luci-ads-bot
+    runtime: python
+    rootDir: artifacts/api-server/bot
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: API_ID
+        sync: false
+      - key: API_HASH
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: ADMIN_ID
+        sync: false
+      - key: LOG_BOT_TOKEN
+        sync: false
+      - key: LOG_CHAT_ID
+        sync: false
+      - key: BOT_USERNAME
+        sync: false
+      - key: LOG_BOT_USERNAME
+        sync: false
+      - key: UPI_ID
+        value: "nabendu8@ptyes"
+      - key: FORCE_JOIN_GROUP
+        value: "0"
+      - key: PORT
+        value: "8080"

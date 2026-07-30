@@ -1,0 +1,4 @@
+python-telegram-bot[job-queue]>=21.11.1
+telethon>=1.37.0
+psycopg2-binary>=2.9.9
+cryptg>=0.4.0
