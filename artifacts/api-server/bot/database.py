@@ -357,14 +357,19 @@ async def create_subscription_request(user_id, plan_id, days, price):
     return await db(_create_subscription_request, user_id, plan_id, days, price)
 
 def _approve_subscription(cur, user_id, plan_id):
+    # PostgreSQL does not allow ORDER BY / LIMIT inside UPDATE directly.
+    # Use a subquery to target the most-recently-requested pending row by id.
     cur.execute("""
         UPDATE subscriptions
         SET status='active',
             approved_at=NOW(),
             expires_at=NOW() + (days || ' days')::INTERVAL
-        WHERE user_id=%s AND plan_id=%s AND status='pending'
-        ORDER BY requested_at DESC
-        LIMIT 1
+        WHERE id = (
+            SELECT id FROM subscriptions
+            WHERE user_id=%s AND plan_id=%s AND status='pending'
+            ORDER BY requested_at DESC
+            LIMIT 1
+        )
     """, (user_id, plan_id))
     return cur.rowcount > 0
 
