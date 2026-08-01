@@ -124,6 +124,21 @@ async def _bio_check_job(context):
         logger.error(f"Bio check job error: {e}")
 
 
+async def _delete_webhook_safe(bot, label: str):
+    """Delete any existing webhook / polling session before we start ours.
+    This is the standard fix for the Render rolling-deploy Conflict error:
+    the old instance keeps polling for a few seconds while the new one starts.
+    Calling delete_webhook terminates Telegram's side of the old session instantly.
+    """
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+        logger.info(f"[{label}] Webhook deleted — exclusive polling claimed ✅")
+    except Exception as e:
+        logger.warning(f"[{label}] delete_webhook warning (non-fatal): {e}")
+    # Brief pause so Telegram propagates the session termination before we poll
+    await asyncio.sleep(1)
+
+
 async def run_main_bot():
     """Build and run the main user-facing bot."""
     logger.info("🚀 Starting Luci Ads Bot (main)...")
@@ -148,7 +163,7 @@ async def run_main_bot():
     admin_handler.register(app)
     lang_handler.register(app)
 
-    # Admin text input handler (must be last — checks states)
+    # Centralised text-input dispatcher (must be registered last)
     from telegram.ext import MessageHandler, filters
     app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND,
@@ -156,11 +171,18 @@ async def run_main_bot():
     ))
 
     logger.info("All handlers registered ✅")
-    logger.info("Main bot polling started 🤖")
 
     await app.initialize()
+
+    # ← KEY FIX: kick out any stale polling session before starting ours
+    await _delete_webhook_safe(app.bot, "main-bot")
+
     await app.start()
-    await app.updater.start_polling(drop_pending_updates=True)
+    await app.updater.start_polling(
+        drop_pending_updates=True,
+        allowed_updates=["message", "callback_query", "chat_member"],
+    )
+    logger.info("Main bot polling started 🤖")
     return app
 
 
@@ -180,8 +202,15 @@ async def run_log_bot():
     log_app.post_init = _post_init_log_bot
 
     await log_app.initialize()
+
+    # ← KEY FIX: kick out any stale polling session before starting ours
+    await _delete_webhook_safe(log_app.bot, "log-bot")
+
     await log_app.start()
-    await log_app.updater.start_polling(drop_pending_updates=True)
+    await log_app.updater.start_polling(
+        drop_pending_updates=True,
+        allowed_updates=["message", "callback_query"],
+    )
     logger.info("Log bot polling started ✅")
     return log_app
 
