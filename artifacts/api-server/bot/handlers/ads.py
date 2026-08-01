@@ -1,5 +1,6 @@
 """
 Ad management: Set message, set interval, start/stop ads, run broadcast.
+All broadcast results go to the log bot ONLY — not shown in the main bot.
 """
 import logging
 from datetime import datetime
@@ -69,7 +70,7 @@ async def cb_set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await query.edit_message_text(
         f"⏰ *Set Time Interval*\n\n"
-        f"*Current:* every {current} minutes\n\n"
+        f"*Current:* every `{current}` minutes\n\n"
         "Select how often to broadcast:",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=interval_kb(),
@@ -99,30 +100,26 @@ async def cb_start_ads(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     settings = await db.get_settings(user.id) or {}
 
-    # Validate
     accounts = await db.get_account_sessions(user.id)
     if len(accounts) < MIN_ACCOUNTS:
         await query.edit_message_text(
             f"❌ *Need at least {MIN_ACCOUNTS} account(s) to start ads!*\n\n"
             "Go to ➕ Add Account first.",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=back_kb("menu"),
+            parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb("menu"),
         )
         return
 
     if not settings.get("ad_message"):
         await query.edit_message_text(
             "❌ *No ad message set!*\n\nGo to 📝 Set Ad Message first.",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=back_kb("menu"),
+            parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb("menu"),
         )
         return
 
     if settings.get("is_running"):
         await query.edit_message_text(
             "⚠️ *Ads are already running!*",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=back_kb("menu"),
+            parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb("menu"),
         )
         return
 
@@ -131,7 +128,6 @@ async def cb_start_ads(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await db.add_log(user.id, "ads_started", f"Interval: {interval}min, Accounts: {len(accounts)}")
     await log_sender.send_ads_started(user.id, user.username or "", len(accounts), interval)
 
-    # Schedule periodic broadcast
     context.job_queue.run_repeating(
         _broadcast_job,
         interval=interval * 60,
@@ -143,11 +139,11 @@ async def cb_start_ads(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(
         f"🟢 *Ads Started!*\n\n"
         f"╔══════════════════════╗\n"
-        f"║  🚀 Broadcasting!     ║\n"
+        f"║  🚀  Broadcasting!   ║\n"
         f"╚══════════════════════╝\n\n"
         f"📡 Sending every *{interval} minutes*\n"
         f"👥 Using *{len(accounts)} account(s)*\n\n"
-        "_You'll be notified after each broadcast._",
+        f"_📋 Results will appear in your Log Bot._",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=back_kb("menu"),
     )
@@ -161,11 +157,14 @@ async def _broadcast_job(context: ContextTypes.DEFAULT_TYPE):
         context.job.schedule_removal()
         return
 
-    # Active hours check
     now_hour = datetime.utcnow().hour
     start_h = settings.get("active_hours_start", 0)
     end_h = settings.get("active_hours_end", 23)
-    if not (start_h <= now_hour <= end_h):
+    if start_h <= end_h:
+        in_hours = start_h <= now_hour <= end_h
+    else:  # wraps midnight
+        in_hours = now_hour >= start_h or now_hour <= end_h
+    if not in_hours:
         logger.info(f"Outside active hours for user {user_id}, skipping.")
         return
 
@@ -179,17 +178,16 @@ async def _broadcast_job(context: ContextTypes.DEFAULT_TYPE):
         message = f"{message}\n\n{sig}"
 
     delay = settings.get("smart_delay_seconds", 3)
-    blacklist_str = settings.get("group_blacklist", "")
+    blacklist_str = settings.get("group_blacklist", "") or ""
     blacklist = [g.strip() for g in blacklist_str.split(",") if g.strip()]
-    excluded_ids = await db.get_excluded_group_ids(user_id)
+    excluded_ids = await _get_excluded_ids(user_id)
     target_filter = settings.get("target_filter", "all")
     rotation = settings.get("rotation_mode", False)
 
     total_sent = total_failed = 0
-    account_results = []
 
     if rotation and len(accounts) > 1:
-        total_sent, total_failed, account_results = await _run_rotation(
+        total_sent, total_failed = await _run_rotation(
             user_id, accounts, message, delay, blacklist, excluded_ids, target_filter
         )
     else:
@@ -200,61 +198,47 @@ async def _broadcast_job(context: ContextTypes.DEFAULT_TYPE):
                 )
                 total_sent += sent
                 total_failed += failed
-                account_results.append(f"• `{phone[-4:]}`: {sent}/{gcount} ✅")
                 await db.add_job_log(user_id, phone, gcount, sent, failed)
             except Exception as e:
                 logger.error(f"Broadcast error for {phone}: {e}")
-                account_results.append(f"• `{phone[-4:]}`: Error ❌")
 
     await db.increment_ad_count(user_id)
-    result_text = "\n".join(account_results) if account_results else "—"
-    total = total_sent + total_failed
-    rate = round(total_sent / total * 100) if total > 0 else 0
 
-    # Notify user
     try:
         user_obj = await context.bot.get_chat(user_id)
         username = user_obj.username or ""
     except Exception:
         username = ""
 
+    # ⬇️  Results go to LOG BOT ONLY — not to the main bot chat
     await log_sender.send_broadcast_result(user_id, username, total_sent, total_failed, len(accounts))
 
+
+async def _get_excluded_ids(user_id):
     try:
-        await context.bot.send_message(
-            chat_id=user_id,
-            text=(
-                f"📡 *Broadcast Complete!*\n\n"
-                f"✅ Sent: `{total_sent}` | ❌ Failed: `{total_failed}`\n"
-                f"🎯 Rate: `{rate}%`\n\n"
-                f"{result_text}"
-            ),
-            parse_mode="Markdown",
-        )
+        groups = await db.get_group_cache(user_id)
+        return {g["group_id"] for g in groups if g.get("excluded")}
     except Exception:
-        pass
+        return set()
 
 
 async def _run_rotation(user_id, accounts, message, delay, blacklist, excluded_ids, target_filter):
     """Distribute groups across accounts in rotation mode."""
-    import asyncio
-    from telethon.tl.types import Channel, Chat
     import telethon_manager as tm2
     from telethon import TelegramClient
     from telethon.sessions import StringSession
     from config import API_ID, API_HASH
+    import asyncio
 
     total_sent = total_failed = 0
-    account_results = []
 
-    # Collect all groups from first account
-    phone, session_string = accounts[0]
+    phone0, session0 = accounts[0]
     try:
-        dialogs = await tm2.get_dialogs(session_string)
+        dialogs = await tm2.get_dialogs(session0)
         all_groups = [d for d in dialogs if d["group_id"] not in excluded_ids]
     except Exception as e:
         logger.error(f"Rotation group fetch error: {e}")
-        return 0, 0, []
+        return 0, 0
 
     chunk_size = max(1, len(all_groups) // len(accounts))
     for i, (phone, session_string) in enumerate(accounts):
@@ -272,21 +256,21 @@ async def _run_rotation(user_id, accounts, message, delay, blacklist, excluded_i
                     sent += 1
                 except Exception:
                     failed += 1
-                import asyncio as _as
-                await _as.sleep(delay)
+                await asyncio.sleep(delay)
             await client.disconnect()
         except Exception as e:
             logger.error(f"Rotation client error {phone}: {e}")
         total_sent += sent
         total_failed += failed
-        account_results.append(f"• `{phone[-4:]}` (rotated): {sent}/{len(items)} ✅")
         await db.add_job_log(user_id, phone, len(items), sent, failed)
 
-    return total_sent, total_failed, account_results
+    return total_sent, total_failed
 
 
 async def run_broadcast(query, context, user):
-    """One-time instant broadcast (for Broadcast Now button)."""
+    """One-time instant broadcast (for Broadcast Now button).
+    Results go to log bot only.
+    """
     settings = await db.get_settings(user.id) or {}
     accounts = await db.get_account_sessions(user.id)
 
@@ -303,7 +287,7 @@ async def run_broadcast(query, context, user):
         return
 
     await query.edit_message_text(
-        "📡 *Broadcasting now...*\n\n_This may take a few minutes._",
+        "📡 *Broadcasting now…*\n\n_Results will appear in your Log Bot._",
         parse_mode=ParseMode.MARKDOWN,
     )
 
@@ -313,7 +297,7 @@ async def run_broadcast(query, context, user):
         message = f"{message}\n\n{sig}"
     delay = settings.get("smart_delay_seconds", 3)
     blacklist = [g.strip() for g in (settings.get("group_blacklist", "") or "").split(",") if g.strip()]
-    excluded_ids = await db.get_excluded_group_ids(user.id)
+    excluded_ids = await _get_excluded_ids(user.id)
     target_filter = settings.get("target_filter", "all")
 
     total_sent = total_failed = 0
@@ -329,19 +313,20 @@ async def run_broadcast(query, context, user):
             logger.error(f"Broadcast now error {phone}: {e}")
 
     await db.increment_ad_count(user.id)
-    total = total_sent + total_failed
-    rate = round(total_sent / total * 100) if total > 0 else 0
 
-    await context.bot.send_message(
-        chat_id=user.id,
-        text=(
-            f"✅ *Instant Broadcast Complete!*\n\n"
-            f"✅ Sent: `{total_sent}` | ❌ Failed: `{total_failed}`\n"
-            f"🎯 Rate: `{rate}%`"
-        ),
-        parse_mode="Markdown",
-        reply_markup=back_kb("premium"),
-    )
+    # Results → log bot only
+    await log_sender.send_broadcast_result(user.id, user.username or "", total_sent, total_failed, len(accounts))
+
+    # Show clean done message (no numbers) in main bot
+    try:
+        await context.bot.send_message(
+            chat_id=user.id,
+            text="✅ *Broadcast sent!*\n\n_Full results are in your Log Bot._",
+            parse_mode="Markdown",
+            reply_markup=back_kb("premium"),
+        )
+    except Exception:
+        pass
 
 
 # ─── Stop Ads ─────────────────────────────────────────────────────────────────
@@ -355,8 +340,7 @@ async def cb_stop_ads(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not settings.get("is_running"):
         await query.edit_message_text(
             "⚠️ *Ads are not running!*",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=back_kb("menu"),
+            parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb("menu"),
         )
         return
 
@@ -369,14 +353,13 @@ async def cb_stop_ads(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await query.edit_message_text(
         "🔴 *Ads Stopped.*\n\nNo more messages will be sent.",
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=back_kb("menu"),
+        parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb("menu"),
     )
 
 
 def register(app):
-    app.add_handler(CallbackQueryHandler(cb_set_ad_msg, pattern="^set_ad_msg$"))
-    app.add_handler(CallbackQueryHandler(cb_set_interval, pattern="^set_interval$"))
+    app.add_handler(CallbackQueryHandler(cb_set_ad_msg,     pattern="^set_ad_msg$"))
+    app.add_handler(CallbackQueryHandler(cb_set_interval,   pattern="^set_interval$"))
     app.add_handler(CallbackQueryHandler(cb_interval_select, pattern=r"^interval_\d+$"))
-    app.add_handler(CallbackQueryHandler(cb_start_ads, pattern="^start_ads$"))
-    app.add_handler(CallbackQueryHandler(cb_stop_ads, pattern="^stop_ads$"))
+    app.add_handler(CallbackQueryHandler(cb_start_ads,      pattern="^start_ads$"))
+    app.add_handler(CallbackQueryHandler(cb_stop_ads,       pattern="^stop_ads$"))

@@ -385,4 +385,4 @@ def register(app):
     app.add_handler(CallbackQueryHandler(cb_delete_account, pattern="^delete_account$"))
     app.add_handler(CallbackQueryHandler(cb_del_acc, pattern=r"^del_acc_\d+$"))
     app.add_handler(CommandHandler("cancel", cmd_cancel))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    # NOTE: Text MessageHandler is registered centrally in main.py via _dispatch_text_handlers

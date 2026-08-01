@@ -39,7 +39,11 @@ def init_schema(cur):
         username TEXT,
         first_name TEXT,
         joined_at TIMESTAMP DEFAULT NOW(),
-        last_active TIMESTAMP DEFAULT NOW()
+        last_active TIMESTAMP DEFAULT NOW(),
+        language TEXT DEFAULT 'en',
+        is_banned BOOLEAN DEFAULT FALSE,
+        ban_reason TEXT DEFAULT NULL,
+        log_chat_id BIGINT DEFAULT NULL
     );
 
     CREATE TABLE IF NOT EXISTS accounts (
@@ -129,23 +133,27 @@ def init_schema(cur):
         "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS ad_count INTEGER DEFAULT 0",
         "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS last_ad_sent TIMESTAMP DEFAULT NULL",
         "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS bio_ok BOOLEAN DEFAULT TRUE",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS language TEXT DEFAULT 'en'",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_banned BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS ban_reason TEXT DEFAULT NULL",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS log_chat_id BIGINT DEFAULT NULL",
     ]
-    for sql in migrations:
+    for m in migrations:
         try:
-            cur.execute(sql)
+            cur.execute(m)
         except Exception:
             pass
-    return True
 
-# ─── User helpers ─────────────────────────────────────────────────────────────
+
+# ─── Users ────────────────────────────────────────────────────────────────────
 
 def _ensure_user(cur, user_id, username, first_name):
     cur.execute("""
         INSERT INTO users (user_id, username, first_name)
         VALUES (%s, %s, %s)
-        ON CONFLICT (user_id) DO UPDATE
-            SET username = EXCLUDED.username,
-                first_name = EXCLUDED.first_name
+        ON CONFLICT (user_id) DO UPDATE SET
+            username = EXCLUDED.username,
+            first_name = EXCLUDED.first_name
     """, (user_id, username, first_name))
     cur.execute("""
         INSERT INTO user_settings (user_id) VALUES (%s)
@@ -153,42 +161,131 @@ def _ensure_user(cur, user_id, username, first_name):
     """, (user_id,))
 
 async def ensure_user(user_id, username, first_name):
-    return await db(_ensure_user, user_id, username, first_name)
+    await db(_ensure_user, user_id, username, first_name)
+
 
 def _touch_user(cur, user_id):
-    cur.execute("""
-        UPDATE users SET last_active = NOW() WHERE user_id = %s
-    """, (user_id,))
+    cur.execute("UPDATE users SET last_active=NOW() WHERE user_id=%s", (user_id,))
 
 async def touch_user(user_id):
-    return await db(_touch_user, user_id)
+    await db(_touch_user, user_id)
+
+
+def _get_user(cur, user_id):
+    cur.execute("SELECT * FROM users WHERE user_id=%s", (user_id,))
+    cols = [d[0] for d in cur.description]
+    row = cur.fetchone()
+    return dict(zip(cols, row)) if row else None
+
+async def get_user(user_id):
+    return await db(_get_user, user_id)
+
+
+def _get_all_users(cur, limit=200, offset=0):
+    cur.execute("""
+        SELECT u.user_id, u.username, u.first_name, u.joined_at, u.last_active,
+               u.is_banned, u.language,
+               (SELECT COUNT(*) FROM accounts a WHERE a.user_id=u.user_id) as account_count,
+               (SELECT COUNT(*) FROM subscriptions s WHERE s.user_id=u.user_id AND s.status='approved') as sub_count
+        FROM users u
+        ORDER BY u.joined_at DESC
+        LIMIT %s OFFSET %s
+    """, (limit, offset))
+    cols = [d[0] for d in cur.description]
+    return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+async def get_all_users(limit=200, offset=0):
+    return await db(_get_all_users, limit, offset)
+
+
+def _count_users(cur):
+    cur.execute("SELECT COUNT(*) FROM users")
+    return cur.fetchone()[0]
+
+async def count_users():
+    return await db(_count_users)
+
 
 def _get_user_last_active(cur, user_id):
-    cur.execute("SELECT last_active FROM users WHERE user_id = %s", (user_id,))
+    cur.execute("SELECT last_active FROM users WHERE user_id=%s", (user_id,))
     row = cur.fetchone()
     return row[0] if row else None
 
 async def get_user_last_active(user_id):
     return await db(_get_user_last_active, user_id)
 
-# ─── Account helpers ─────────────────────────────────────────────────────────
 
-def _add_account(cur, user_id, phone, session_string, label=None):
+# ─── Ban / Unban ──────────────────────────────────────────────────────────────
+
+def _ban_user(cur, user_id, reason=""):
     cur.execute("""
-        INSERT INTO accounts (user_id, phone, session_string, label)
-        VALUES (%s, %s, %s, %s)
-        ON CONFLICT (user_id, phone) DO UPDATE
-            SET session_string = EXCLUDED.session_string,
-                is_active = TRUE, bio_ok = TRUE
-    """, (user_id, phone, session_string, label or phone))
+        UPDATE users SET is_banned=TRUE, ban_reason=%s WHERE user_id=%s
+    """, (reason, user_id))
+    # Stop any running ads
+    cur.execute("UPDATE user_settings SET is_running=FALSE WHERE user_id=%s", (user_id,))
 
-async def add_account(user_id, phone, session_string, label=None):
-    return await db(_add_account, user_id, phone, session_string, label)
+async def ban_user(user_id, reason=""):
+    await db(_ban_user, user_id, reason)
+
+
+def _unban_user(cur, user_id):
+    cur.execute("UPDATE users SET is_banned=FALSE, ban_reason=NULL WHERE user_id=%s", (user_id,))
+
+async def unban_user(user_id):
+    await db(_unban_user, user_id)
+
+
+def _is_banned(cur, user_id):
+    cur.execute("SELECT is_banned FROM users WHERE user_id=%s", (user_id,))
+    row = cur.fetchone()
+    return bool(row[0]) if row else False
+
+async def is_banned(user_id):
+    return await db(_is_banned, user_id)
+
+
+# ─── Language ─────────────────────────────────────────────────────────────────
+
+def _get_language(cur, user_id):
+    cur.execute("SELECT language FROM users WHERE user_id=%s", (user_id,))
+    row = cur.fetchone()
+    return row[0] if row else "en"
+
+async def get_language(user_id):
+    return await db(_get_language, user_id)
+
+
+def _set_language(cur, user_id, lang):
+    cur.execute("UPDATE users SET language=%s WHERE user_id=%s", (lang, user_id))
+
+async def set_language(user_id, lang):
+    await db(_set_language, user_id, lang)
+
+
+# ─── Log Chat ─────────────────────────────────────────────────────────────────
+
+def _set_log_chat_id(cur, user_id, chat_id):
+    cur.execute("UPDATE users SET log_chat_id=%s WHERE user_id=%s", (chat_id, user_id))
+
+async def set_log_chat_id(user_id, chat_id):
+    await db(_set_log_chat_id, user_id, chat_id)
+
+
+def _get_log_chat_id(cur, user_id):
+    cur.execute("SELECT log_chat_id FROM users WHERE user_id=%s", (user_id,))
+    row = cur.fetchone()
+    return row[0] if row else None
+
+async def get_log_chat_id(user_id):
+    return await db(_get_log_chat_id, user_id)
+
+
+# ─── Accounts ─────────────────────────────────────────────────────────────────
 
 def _get_accounts(cur, user_id):
     cur.execute("""
-        SELECT id, phone, label, is_active, bio_ok, created_at
-        FROM accounts WHERE user_id = %s ORDER BY created_at
+        SELECT id, phone, label, is_active, bio_ok
+        FROM accounts WHERE user_id=%s ORDER BY created_at ASC
     """, (user_id,))
     cols = [d[0] for d in cur.description]
     return [dict(zip(cols, row)) for row in cur.fetchall()]
@@ -196,210 +293,206 @@ def _get_accounts(cur, user_id):
 async def get_accounts(user_id):
     return await db(_get_accounts, user_id)
 
+
+def _get_account_sessions(cur, user_id):
+    cur.execute("""
+        SELECT phone, session_string FROM accounts
+        WHERE user_id=%s AND is_active=TRUE AND bio_ok=TRUE
+    """, (user_id,))
+    return cur.fetchall()
+
+async def get_account_sessions(user_id):
+    return await db(_get_account_sessions, user_id)
+
+
+def _get_all_active_sessions(cur):
+    cur.execute("""
+        SELECT user_id, phone, session_string FROM accounts
+        WHERE is_active=TRUE AND bio_ok=TRUE
+    """)
+    return cur.fetchall()
+
+async def get_all_active_sessions():
+    return await db(_get_all_active_sessions)
+
+
 def _count_accounts(cur, user_id):
-    cur.execute("SELECT COUNT(*) FROM accounts WHERE user_id=%s AND is_active=TRUE", (user_id,))
+    cur.execute("SELECT COUNT(*) FROM accounts WHERE user_id=%s", (user_id,))
     return cur.fetchone()[0]
 
 async def count_accounts(user_id):
     return await db(_count_accounts, user_id)
 
-def _get_account_sessions(cur, user_id):
-    cur.execute("""
-        SELECT phone, session_string FROM accounts
-        WHERE user_id = %s AND is_active = TRUE AND bio_ok = TRUE
-    """, (user_id,))
-    return [(row[0], row[1]) for row in cur.fetchall()]
 
-async def get_account_sessions(user_id):
-    return await db(_get_account_sessions, user_id)
+def _add_account(cur, user_id, phone, session_string, label=""):
+    cur.execute("""
+        INSERT INTO accounts (user_id, phone, session_string, label)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (user_id, phone) DO UPDATE SET
+            session_string = EXCLUDED.session_string,
+            label = EXCLUDED.label,
+            is_active = TRUE,
+            bio_ok = TRUE
+    """, (user_id, phone, session_string, label))
+
+async def add_account(user_id, phone, session_string, label=""):
+    await db(_add_account, user_id, phone, session_string, label)
+
 
 def _delete_account(cur, user_id, account_id):
-    cur.execute("""
-        DELETE FROM accounts WHERE id = %s AND user_id = %s
-    """, (account_id, user_id))
-    return cur.rowcount > 0
+    cur.execute("DELETE FROM accounts WHERE id=%s AND user_id=%s", (account_id, user_id))
 
 async def delete_account(user_id, account_id):
-    return await db(_delete_account, user_id, account_id)
+    await db(_delete_account, user_id, account_id)
+
 
 def _set_account_bio_ok(cur, user_id, phone, bio_ok):
-    cur.execute("""
-        UPDATE accounts SET bio_ok = %s WHERE user_id = %s AND phone = %s
-    """, (bio_ok, user_id, phone))
+    cur.execute("UPDATE accounts SET bio_ok=%s WHERE user_id=%s AND phone=%s",
+                (bio_ok, user_id, phone))
 
 async def set_account_bio_ok(user_id, phone, bio_ok):
-    return await db(_set_account_bio_ok, user_id, phone, bio_ok)
+    await db(_set_account_bio_ok, user_id, phone, bio_ok)
 
-def _get_all_active_sessions(cur):
-    cur.execute("""
-        SELECT user_id, phone, session_string FROM accounts
-        WHERE is_active = TRUE
-    """)
-    return [(row[0], row[1], row[2]) for row in cur.fetchall()]
 
-async def get_all_active_sessions():
-    return await db(_get_all_active_sessions)
-
-# ─── Settings helpers ─────────────────────────────────────────────────────────
+# ─── Settings ─────────────────────────────────────────────────────────────────
 
 def _get_settings(cur, user_id):
-    cur.execute("""
-        SELECT * FROM user_settings WHERE user_id = %s
-    """, (user_id,))
-    row = cur.fetchone()
-    if not row:
-        return None
+    cur.execute("SELECT * FROM user_settings WHERE user_id=%s", (user_id,))
     cols = [d[0] for d in cur.description]
-    return dict(zip(cols, row))
+    row = cur.fetchone()
+    return dict(zip(cols, row)) if row else None
 
 async def get_settings(user_id):
     return await db(_get_settings, user_id)
 
+
 def _set_ad_message(cur, user_id, message):
     cur.execute("""
-        UPDATE user_settings SET ad_message = %s WHERE user_id = %s
-    """, (message, user_id))
+        INSERT INTO user_settings (user_id, ad_message) VALUES (%s, %s)
+        ON CONFLICT (user_id) DO UPDATE SET ad_message = EXCLUDED.ad_message
+    """, (user_id, message))
 
 async def set_ad_message(user_id, message):
-    return await db(_set_ad_message, user_id, message)
+    await db(_set_ad_message, user_id, message)
+
 
 def _set_interval(cur, user_id, minutes):
     cur.execute("""
-        UPDATE user_settings SET interval_minutes = %s WHERE user_id = %s
-    """, (minutes, user_id))
+        INSERT INTO user_settings (user_id, interval_minutes) VALUES (%s, %s)
+        ON CONFLICT (user_id) DO UPDATE SET interval_minutes = EXCLUDED.interval_minutes
+    """, (user_id, minutes))
 
 async def set_interval(user_id, minutes):
-    return await db(_set_interval, user_id, minutes)
+    await db(_set_interval, user_id, minutes)
 
-def _set_running(cur, user_id, is_running):
-    cur.execute("""
-        UPDATE user_settings SET is_running = %s WHERE user_id = %s
-    """, (is_running, user_id))
 
-async def set_running(user_id, is_running):
-    return await db(_set_running, user_id, is_running)
+def _set_running(cur, user_id, running):
+    cur.execute("UPDATE user_settings SET is_running=%s WHERE user_id=%s", (running, user_id))
+
+async def set_running(user_id, running):
+    await db(_set_running, user_id, running)
+
 
 def _set_auto_reply(cur, user_id, enabled, message=None):
-    if message is not None:
+    if enabled is not None and message is not None:
         cur.execute("""
-            UPDATE user_settings SET auto_reply_message = %s WHERE user_id = %s
-        """, (message, user_id))
-    if enabled is not None:
-        cur.execute("""
-            UPDATE user_settings SET auto_reply_enabled = %s WHERE user_id = %s
-        """, (enabled, user_id))
+            UPDATE user_settings SET auto_reply_enabled=%s, auto_reply_message=%s
+            WHERE user_id=%s
+        """, (enabled, message, user_id))
+    elif enabled is not None:
+        cur.execute("UPDATE user_settings SET auto_reply_enabled=%s WHERE user_id=%s",
+                    (enabled, user_id))
+    elif message is not None:
+        cur.execute("UPDATE user_settings SET auto_reply_message=%s WHERE user_id=%s",
+                    (message, user_id))
 
 async def set_auto_reply(user_id, enabled, message=None):
-    return await db(_set_auto_reply, user_id, enabled, message)
+    await db(_set_auto_reply, user_id, enabled, message)
+
 
 def _set_smart_delay(cur, user_id, seconds):
-    cur.execute("UPDATE user_settings SET smart_delay_seconds=%s WHERE user_id=%s", (seconds, user_id))
+    cur.execute("UPDATE user_settings SET smart_delay_seconds=%s WHERE user_id=%s",
+                (seconds, user_id))
 
 async def set_smart_delay(user_id, seconds):
-    return await db(_set_smart_delay, user_id, seconds)
+    await db(_set_smart_delay, user_id, seconds)
 
-def _set_group_blacklist(cur, user_id, value):
-    cur.execute("UPDATE user_settings SET group_blacklist=%s WHERE user_id=%s", (value, user_id))
 
-async def set_group_blacklist(user_id, value):
-    return await db(_set_group_blacklist, user_id, value)
+def _set_group_blacklist(cur, user_id, blacklist):
+    cur.execute("UPDATE user_settings SET group_blacklist=%s WHERE user_id=%s",
+                (blacklist, user_id))
+
+async def set_group_blacklist(user_id, blacklist):
+    await db(_set_group_blacklist, user_id, blacklist)
+
 
 def _set_rotation_mode(cur, user_id, enabled):
-    cur.execute("UPDATE user_settings SET rotation_mode=%s WHERE user_id=%s", (enabled, user_id))
+    cur.execute("UPDATE user_settings SET rotation_mode=%s WHERE user_id=%s",
+                (enabled, user_id))
 
 async def set_rotation_mode(user_id, enabled):
-    return await db(_set_rotation_mode, user_id, enabled)
+    await db(_set_rotation_mode, user_id, enabled)
+
+
+def _set_scheduled_time(cur, user_id, time_str):
+    cur.execute("UPDATE user_settings SET scheduled_time=%s WHERE user_id=%s",
+                (time_str, user_id))
+
+async def set_scheduled_time(user_id, time_str):
+    await db(_set_scheduled_time, user_id, time_str)
+
 
 def _set_message_signature(cur, user_id, sig):
-    cur.execute("UPDATE user_settings SET message_signature=%s WHERE user_id=%s", (sig, user_id))
+    cur.execute("UPDATE user_settings SET message_signature=%s WHERE user_id=%s",
+                (sig, user_id))
 
 async def set_message_signature(user_id, sig):
-    return await db(_set_message_signature, user_id, sig)
+    await db(_set_message_signature, user_id, sig)
+
 
 def _set_active_hours(cur, user_id, start, end):
-    cur.execute("UPDATE user_settings SET active_hours_start=%s, active_hours_end=%s WHERE user_id=%s", (start, end, user_id))
+    cur.execute("UPDATE user_settings SET active_hours_start=%s, active_hours_end=%s WHERE user_id=%s",
+                (start, end, user_id))
 
 async def set_active_hours(user_id, start, end):
-    return await db(_set_active_hours, user_id, start, end)
+    await db(_set_active_hours, user_id, start, end)
 
-def _set_scheduled_time(cur, user_id, t):
-    cur.execute("UPDATE user_settings SET scheduled_time=%s WHERE user_id=%s", (t, user_id))
-
-async def set_scheduled_time(user_id, t):
-    return await db(_set_scheduled_time, user_id, t)
 
 def _set_target_filter(cur, user_id, target):
-    cur.execute("UPDATE user_settings SET target_filter=%s WHERE user_id=%s", (target, user_id))
+    cur.execute("UPDATE user_settings SET target_filter=%s WHERE user_id=%s",
+                (target, user_id))
 
 async def set_target_filter(user_id, target):
-    return await db(_set_target_filter, user_id, target)
+    await db(_set_target_filter, user_id, target)
+
 
 def _increment_ad_count(cur, user_id):
     cur.execute("""
-        UPDATE user_settings SET ad_count = ad_count + 1, last_ad_sent = NOW()
-        WHERE user_id = %s
+        UPDATE user_settings SET ad_count=ad_count+1, last_ad_sent=NOW()
+        WHERE user_id=%s
     """, (user_id,))
 
 async def increment_ad_count(user_id):
-    return await db(_increment_ad_count, user_id)
+    await db(_increment_ad_count, user_id)
 
-# ─── Premium / Subscriptions ─────────────────────────────────────────────────
 
-def _create_subscription_request(cur, user_id, plan_id, days, price):
-    cur.execute("""
-        INSERT INTO subscriptions (user_id, plan_id, days, price, status)
-        VALUES (%s, %s, %s, %s, 'pending')
-        RETURNING id
-    """, (user_id, plan_id, days, price))
-    return cur.fetchone()[0]
-
-async def create_subscription_request(user_id, plan_id, days, price):
-    return await db(_create_subscription_request, user_id, plan_id, days, price)
-
-def _approve_subscription(cur, user_id, plan_id):
-    # PostgreSQL does not allow ORDER BY / LIMIT inside UPDATE directly.
-    # Use a subquery to target the most-recently-requested pending row by id.
-    cur.execute("""
-        UPDATE subscriptions
-        SET status='active',
-            approved_at=NOW(),
-            expires_at=NOW() + (days || ' days')::INTERVAL
-        WHERE id = (
-            SELECT id FROM subscriptions
-            WHERE user_id=%s AND plan_id=%s AND status='pending'
-            ORDER BY requested_at DESC
-            LIMIT 1
-        )
-    """, (user_id, plan_id))
-    return cur.rowcount > 0
-
-async def approve_subscription(user_id, plan_id):
-    return await db(_approve_subscription, user_id, plan_id)
-
-def _reject_subscription(cur, user_id, plan_id):
-    cur.execute("""
-        UPDATE subscriptions SET status='rejected'
-        WHERE user_id=%s AND plan_id=%s AND status='pending'
-    """, (user_id, plan_id))
-    return cur.rowcount > 0
-
-async def reject_subscription(user_id, plan_id):
-    return await db(_reject_subscription, user_id, plan_id)
+# ─── Premium / Subscriptions ──────────────────────────────────────────────────
 
 def _is_premium(cur, user_id):
     cur.execute("""
         SELECT COUNT(*) FROM subscriptions
-        WHERE user_id=%s AND status='active' AND expires_at > NOW()
+        WHERE user_id=%s AND status='approved' AND expires_at > NOW()
     """, (user_id,))
     return cur.fetchone()[0] > 0
 
 async def is_premium(user_id):
     return await db(_is_premium, user_id)
 
+
 def _get_premium_expiry(cur, user_id):
     cur.execute("""
         SELECT expires_at FROM subscriptions
-        WHERE user_id=%s AND status='active' AND expires_at > NOW()
+        WHERE user_id=%s AND status='approved' AND expires_at > NOW()
         ORDER BY expires_at DESC LIMIT 1
     """, (user_id,))
     row = cur.fetchone()
@@ -408,101 +501,83 @@ def _get_premium_expiry(cur, user_id):
 async def get_premium_expiry(user_id):
     return await db(_get_premium_expiry, user_id)
 
-def _get_pending_subscriptions(cur):
+
+def _create_subscription_request(cur, user_id, plan_id, days, price):
     cur.execute("""
-        SELECT s.id, s.user_id, s.plan_id, s.days, s.price, s.requested_at,
-               u.username, u.first_name
-        FROM subscriptions s
-        JOIN users u ON u.user_id = s.user_id
-        WHERE s.status='pending'
-        ORDER BY s.requested_at
-    """)
-    cols = [d[0] for d in cur.description]
-    return [dict(zip(cols, row)) for row in cur.fetchall()]
+        INSERT INTO subscriptions (user_id, plan_id, days, price, status)
+        VALUES (%s, %s, %s, %s, 'pending')
+    """, (user_id, plan_id, days, price))
 
-async def get_pending_subscriptions():
-    return await db(_get_pending_subscriptions)
+async def create_subscription_request(user_id, plan_id, days, price):
+    await db(_create_subscription_request, user_id, plan_id, days, price)
 
-# ─── Group cache ──────────────────────────────────────────────────────────────
 
-def _upsert_group_cache(cur, user_id, phone, group_id, title, is_channel, member_count):
+def _approve_subscription(cur, user_id, plan_id):
     cur.execute("""
-        INSERT INTO group_cache (user_id, account_phone, group_id, title, is_channel, member_count, last_synced)
-        VALUES (%s, %s, %s, %s, %s, %s, NOW())
-        ON CONFLICT (user_id, account_phone, group_id) DO UPDATE
-            SET title=EXCLUDED.title, is_channel=EXCLUDED.is_channel,
-                member_count=EXCLUDED.member_count, last_synced=NOW()
-    """, (user_id, phone, group_id, title, is_channel, member_count))
-
-async def upsert_group_cache(user_id, phone, group_id, title, is_channel, member_count):
-    return await db(_upsert_group_cache, user_id, phone, group_id, title, is_channel, member_count)
-
-def _get_group_cache(cur, user_id):
-    cur.execute("""
-        SELECT group_id, title, is_channel, excluded, member_count, account_phone
-        FROM group_cache WHERE user_id=%s ORDER BY title
-    """, (user_id,))
-    cols = [d[0] for d in cur.description]
-    return [dict(zip(cols, row)) for row in cur.fetchall()]
-
-async def get_group_cache(user_id):
-    return await db(_get_group_cache, user_id)
-
-def _toggle_group_exclude(cur, user_id, group_id):
-    cur.execute("""
-        UPDATE group_cache SET excluded = NOT excluded
-        WHERE user_id=%s AND group_id=%s
-    """, (user_id, group_id))
-
-async def toggle_group_exclude(user_id, group_id):
-    return await db(_toggle_group_exclude, user_id, group_id)
-
-def _set_all_groups_excluded(cur, user_id, excluded):
-    cur.execute("UPDATE group_cache SET excluded=%s WHERE user_id=%s", (excluded, user_id))
-
-async def set_all_groups_excluded(user_id, excluded):
-    return await db(_set_all_groups_excluded, user_id, excluded)
-
-def _get_excluded_group_ids(cur, user_id):
-    cur.execute("""
-        SELECT group_id FROM group_cache WHERE user_id=%s AND excluded=TRUE
-    """, (user_id,))
-    return [row[0] for row in cur.fetchall()]
-
-async def get_excluded_group_ids(user_id):
-    return await db(_get_excluded_group_ids, user_id)
-
-# ─── Stats ────────────────────────────────────────────────────────────────────
-
-def _get_stats(cur, user_id):
-    cur.execute("""
-        SELECT COUNT(*), COALESCE(SUM(sent_count),0),
-               COALESCE(SUM(failed_count),0), COALESCE(MAX(group_count),0)
-        FROM ad_jobs WHERE user_id=%s
-    """, (user_id,))
+        SELECT id, days FROM subscriptions
+        WHERE user_id=%s AND plan_id=%s AND status='pending'
+        ORDER BY requested_at DESC LIMIT 1
+    """, (user_id, plan_id))
     row = cur.fetchone()
     if not row:
-        return {"total_jobs": 0, "total_sent": 0, "total_failed": 0, "max_groups": 0}
-    return {
-        "total_jobs": row[0],
-        "total_sent": int(row[1]),
-        "total_failed": int(row[2]),
-        "max_groups": int(row[3]),
-    }
-
-async def get_stats(user_id):
-    return await db(_get_stats, user_id)
-
-def _get_recent_jobs(cur, user_id, limit=10):
+        return False
+    sub_id, days = row
     cur.execute("""
-        SELECT account_phone, group_count, sent_count, failed_count, ran_at
-        FROM ad_jobs WHERE user_id=%s ORDER BY ran_at DESC LIMIT %s
-    """, (user_id, limit))
-    cols = [d[0] for d in cur.description]
-    return [dict(zip(cols, row)) for row in cur.fetchall()]
+        UPDATE subscriptions
+        SET status='approved', approved_at=NOW(),
+            expires_at=NOW() + (%s || ' days')::INTERVAL
+        WHERE id=%s
+    """, (days, sub_id))
+    return True
 
-async def get_recent_jobs(user_id, limit=10):
-    return await db(_get_recent_jobs, user_id, limit)
+async def approve_subscription(user_id, plan_id):
+    return await db(_approve_subscription, user_id, plan_id)
+
+
+def _reject_subscription(cur, user_id, plan_id):
+    cur.execute("""
+        UPDATE subscriptions SET status='rejected'
+        WHERE user_id=%s AND plan_id=%s AND status='pending'
+    """, (user_id, plan_id))
+    return True
+
+async def reject_subscription(user_id, plan_id):
+    return await db(_reject_subscription, user_id, plan_id)
+
+
+def _grant_premium(cur, user_id, days):
+    """Admin grants premium directly."""
+    cur.execute("""
+        INSERT INTO subscriptions (user_id, plan_id, days, price, status, approved_at, expires_at)
+        VALUES (%s, 'admin_grant', %s, 0, 'approved', NOW(), NOW() + (%s || ' days')::INTERVAL)
+    """, (user_id, days, days))
+
+async def grant_premium(user_id, days):
+    await db(_grant_premium, user_id, days)
+
+
+def _revoke_premium(cur, user_id):
+    """Admin revokes all active subscriptions."""
+    cur.execute("""
+        UPDATE subscriptions
+        SET status='revoked', expires_at=NOW()
+        WHERE user_id=%s AND status='approved' AND expires_at > NOW()
+    """, (user_id,))
+
+async def revoke_premium(user_id):
+    await db(_revoke_premium, user_id)
+
+
+def _count_premium_users(cur):
+    cur.execute("""
+        SELECT COUNT(DISTINCT user_id) FROM subscriptions
+        WHERE status='approved' AND expires_at > NOW()
+    """)
+    return cur.fetchone()[0]
+
+async def count_premium_users():
+    return await db(_count_premium_users)
+
 
 # ─── Logs ─────────────────────────────────────────────────────────────────────
 
@@ -517,16 +592,26 @@ async def add_log(user_id, action, details=None):
     except Exception:
         pass
 
-def _get_logs(cur, user_id, limit=20):
+
+def _get_logs(cur, user_id, limit=20, offset=0):
     cur.execute("""
         SELECT action, details, created_at FROM logs
-        WHERE user_id=%s ORDER BY created_at DESC LIMIT %s
-    """, (user_id, limit))
+        WHERE user_id=%s ORDER BY created_at DESC LIMIT %s OFFSET %s
+    """, (user_id, limit, offset))
     cols = [d[0] for d in cur.description]
     return [dict(zip(cols, row)) for row in cur.fetchall()]
 
-async def get_logs(user_id, limit=20):
-    return await db(_get_logs, user_id, limit)
+async def get_logs(user_id, limit=20, offset=0):
+    return await db(_get_logs, user_id, limit, offset)
+
+
+def _count_logs(cur, user_id):
+    cur.execute("SELECT COUNT(*) FROM logs WHERE user_id=%s", (user_id,))
+    return cur.fetchone()[0]
+
+async def count_logs(user_id):
+    return await db(_count_logs, user_id)
+
 
 def _add_job_log(cur, user_id, phone, group_count, sent, failed):
     cur.execute("""
@@ -539,3 +624,165 @@ async def add_job_log(user_id, phone, group_count, sent, failed):
         await db(_add_job_log, user_id, phone, group_count, sent, failed)
     except Exception:
         pass
+
+
+# ─── Stats ─────────────────────────────────────────────────────────────────────
+
+def _get_stats(cur, user_id):
+    cur.execute("""
+        SELECT
+            COALESCE(SUM(sent_count),0)   as total_sent,
+            COALESCE(SUM(failed_count),0) as total_failed,
+            COUNT(*)                       as total_jobs,
+            COALESCE(MAX(group_count),0)   as max_groups
+        FROM ad_jobs WHERE user_id=%s
+    """, (user_id,))
+    cols = [d[0] for d in cur.description]
+    row = cur.fetchone()
+    return dict(zip(cols, row)) if row else {}
+
+async def get_stats(user_id):
+    return await db(_get_stats, user_id)
+
+
+def _get_global_stats(cur):
+    cur.execute("SELECT COUNT(*) FROM users")
+    total_users = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM users WHERE is_banned=TRUE")
+    banned_users = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(DISTINCT user_id) FROM subscriptions WHERE status='approved' AND expires_at > NOW()")
+    premium_users = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM accounts")
+    total_accounts = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM user_settings WHERE is_running=TRUE")
+    running_bots = cur.fetchone()[0]
+    cur.execute("SELECT COALESCE(SUM(sent_count),0) FROM ad_jobs")
+    total_sent = cur.fetchone()[0]
+    return {
+        "total_users": total_users,
+        "banned_users": banned_users,
+        "premium_users": premium_users,
+        "total_accounts": total_accounts,
+        "running_bots": running_bots,
+        "total_sent": total_sent,
+    }
+
+async def get_global_stats():
+    return await db(_get_global_stats)
+
+
+def _get_recent_jobs(cur, user_id, limit=10):
+    cur.execute("""
+        SELECT account_phone, group_count, sent_count, failed_count, ran_at
+        FROM ad_jobs WHERE user_id=%s ORDER BY ran_at DESC LIMIT %s
+    """, (user_id, limit))
+    cols = [d[0] for d in cur.description]
+    return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+async def get_recent_jobs(user_id, limit=10):
+    return await db(_get_recent_jobs, user_id, limit)
+
+
+# ─── Group / Channel Cache ─────────────────────────────────────────────────────
+
+def _upsert_group_cache(cur, user_id, phone, group_id, title, is_channel=False, member_count=0):
+    cur.execute("""
+        INSERT INTO group_cache (user_id, account_phone, group_id, title, is_channel, member_count)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        ON CONFLICT (user_id, account_phone, group_id) DO UPDATE SET
+            title = EXCLUDED.title,
+            is_channel = EXCLUDED.is_channel,
+            member_count = EXCLUDED.member_count,
+            last_synced = NOW()
+    """, (user_id, phone, group_id, title, is_channel, member_count))
+
+async def upsert_group_cache(user_id, phone, group_id, title, is_channel=False, member_count=0):
+    await db(_upsert_group_cache, user_id, phone, group_id, title, is_channel, member_count)
+
+
+def _get_group_cache(cur, user_id):
+    cur.execute("""
+        SELECT DISTINCT ON (group_id) group_id, title, is_channel, excluded, member_count
+        FROM group_cache WHERE user_id=%s
+        ORDER BY group_id, last_synced DESC
+    """, (user_id,))
+    cols = [d[0] for d in cur.description]
+    return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+async def get_group_cache(user_id):
+    return await db(_get_group_cache, user_id)
+
+
+def _get_groups_only(cur, user_id):
+    cur.execute("""
+        SELECT DISTINCT ON (group_id) group_id, title, is_channel, excluded, member_count
+        FROM group_cache WHERE user_id=%s AND is_channel=FALSE
+        ORDER BY group_id, last_synced DESC
+    """, (user_id,))
+    cols = [d[0] for d in cur.description]
+    return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+async def get_groups_only(user_id):
+    return await db(_get_groups_only, user_id)
+
+
+def _get_channels_only(cur, user_id):
+    cur.execute("""
+        SELECT DISTINCT ON (group_id) group_id, title, is_channel, excluded, member_count
+        FROM group_cache WHERE user_id=%s AND is_channel=TRUE
+        ORDER BY group_id, last_synced DESC
+    """, (user_id,))
+    cols = [d[0] for d in cur.description]
+    return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+async def get_channels_only(user_id):
+    return await db(_get_channels_only, user_id)
+
+
+def _toggle_group_exclude(cur, user_id, group_id):
+    cur.execute("""
+        UPDATE group_cache SET excluded = NOT excluded
+        WHERE user_id=%s AND group_id=%s
+    """, (user_id, group_id))
+
+async def toggle_group_exclude(user_id, group_id):
+    await db(_toggle_group_exclude, user_id, group_id)
+
+
+def _exclude_all_groups(cur, user_id):
+    cur.execute("UPDATE group_cache SET excluded=TRUE WHERE user_id=%s AND is_channel=FALSE", (user_id,))
+
+async def exclude_all_groups(user_id):
+    await db(_exclude_all_groups, user_id)
+
+
+def _include_all_groups(cur, user_id):
+    cur.execute("UPDATE group_cache SET excluded=FALSE WHERE user_id=%s AND is_channel=FALSE", (user_id,))
+
+async def include_all_groups(user_id):
+    await db(_include_all_groups, user_id)
+
+
+def _exclude_all_channels(cur, user_id):
+    cur.execute("UPDATE group_cache SET excluded=TRUE WHERE user_id=%s AND is_channel=TRUE", (user_id,))
+
+async def exclude_all_channels(user_id):
+    await db(_exclude_all_channels, user_id)
+
+
+def _include_all_channels(cur, user_id):
+    cur.execute("UPDATE group_cache SET excluded=FALSE WHERE user_id=%s AND is_channel=TRUE", (user_id,))
+
+async def include_all_channels(user_id):
+    await db(_include_all_channels, user_id)
+
+
+def _get_excluded_group_ids(cur, user_id):
+    cur.execute("""
+        SELECT DISTINCT group_id FROM group_cache
+        WHERE user_id=%s AND excluded=TRUE
+    """, (user_id,))
+    return {row[0] for row in cur.fetchall()}
+
+async def get_excluded_group_ids(user_id):
+    return await db(_get_excluded_group_ids, user_id)

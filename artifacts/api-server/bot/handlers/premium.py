@@ -1,15 +1,5 @@
 """
-Premium features — locked behind subscription:
-  📊 Stats Dashboard     — detailed groups/channels/broadcast stats
-  ⚡ Smart Delay         — custom per-group message delay
-  📡 Broadcast Now       — one-time instant broadcast
-  🚫 Remove Groups       — exclude specific groups
-  🔄 Account Rotation    — distribute groups across accounts
-  💎 Message Signature   — custom footer appended to every ad
-  🌙 Active Hours        — only send between set hours
-  📅 Scheduled Broadcast — set a daily one-time send time
-  🎯 Target Filter       — groups only / channels only / all
-  📈 Ad Analytics        — detailed per-account analytics
+Premium features — locked behind subscription.
 """
 import logging
 from datetime import datetime
@@ -22,12 +12,11 @@ import telethon_manager as tm
 from keyboards import (
     back_kb, back_and_cancel_kb, premium_menu_kb,
     smart_delay_kb, active_hours_kb, lock_premium_kb,
-    group_exclude_kb,
+    group_exclude_kb, channel_exclude_kb,
 )
 
 logger = logging.getLogger(__name__)
 
-# State keys
 SET_DELAY_STATE      = "set_smart_delay_waiting"
 SET_BLACKLIST_STATE  = "set_blacklist_waiting"
 SET_SIGNATURE_STATE  = "set_signature_waiting"
@@ -59,18 +48,20 @@ async def cb_premium(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     crown = "👑 *PREMIUM*" if is_prem else "🆓 *FREE PLAN*"
     exp_line = f"\n📅 Expires: {expiry.strftime('%d %b %Y')}" if expiry else ""
-
     lock = "" if is_prem else "🔒 "
 
     await query.edit_message_text(
-        f"⭐ *Premium Features*  {crown}{exp_line}\n\n"
+        f"╔════════════════════════╗\n"
+        f"║  ⭐  *PREMIUM FEATURES* ║\n"
+        f"╚════════════════════════╝\n\n"
+        f"{crown}{exp_line}\n\n"
         f"⚡ Smart Delay: `{delay}s`\n"
         f"🔄 Account Rotation: {rotation}\n"
-        f"💎 Message Signature: {sig}\n"
+        f"💎 Signature: {sig}\n"
         f"🌙 Active Hours: `{hours} UTC`\n"
         f"📅 Scheduled: `{scheduled}`\n"
         f"🎯 Target Filter: `{target}`\n\n"
-        f"{'🔓 All features unlocked!' if is_prem else f'🔒 {lock}Features need Premium subscription.'}",
+        f"{'✨ All features unlocked!' if is_prem else f'🔒 Upgrade to unlock all features.'}",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=premium_menu_kb(is_prem),
     )
@@ -87,7 +78,6 @@ async def cb_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     accounts = await db.get_accounts(user.id)
     settings = await db.get_settings(user.id) or {}
     groups   = await db.get_group_cache(user.id)
-    is_prem  = await db.is_premium(user.id)
 
     total_sent   = stats.get("total_sent", 0)
     total_failed = stats.get("total_failed", 0)
@@ -110,10 +100,8 @@ async def cb_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bio_note = " ⚠️" if not acc.get("bio_ok", True) else ""
         account_lines += f"  {icon} `{acc['label'] or acc['phone']}`{bio_note}\n"
 
-    premium_note = "\n\n_📊 Sync group list via ➕ Add Account for full details_" if not groups else ""
-
     text = (
-        f"📊 *Your Complete Statistics*\n\n"
+        f"📊 *Complete Statistics*\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"👥 *Accounts:* `{len(accounts)}`\n"
         f"{account_lines}"
@@ -124,27 +112,20 @@ async def cb_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"✅ *Active targets:* `{active_count}`\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"📡 *Total Broadcasts:* `{total_jobs}`\n"
-        f"✅ *Messages Sent:* `{total_sent}`\n"
-        f"❌ *Messages Failed:* `{total_failed}`\n"
+        f"✅ *Sent:* `{total_sent}`\n"
+        f"❌ *Failed:* `{total_failed}`\n"
         f"🏆 *Max Groups/Run:* `{max_groups}`\n\n"
         f"🎯 *Success Rate:* `{rate}%`\n"
         f"{bar} `{rate}%`\n\n"
         f"⏰ *Interval:* `{settings.get('interval_minutes', 60)} min`\n"
-        f"🚀 *Running:* {'🟢 Yes' if settings.get('is_running') else '🔴 No'}\n"
-        f"🔄 *Rotation:* {'🟢 On' if settings.get('rotation_mode') else '🔴 Off'}"
-        f"{premium_note}"
+        f"🚀 *Running:* {'🟢 Yes' if settings.get('is_running') else '🔴 No'}"
     )
 
     kb = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("🟢 📋 Recent Jobs", callback_data="stats_jobs"),
-        ],
+        [InlineKeyboardButton("📡 Recent Jobs", callback_data="stats_jobs")],
         [InlineKeyboardButton("🔙 Back", callback_data="menu")],
     ])
-
-    await query.edit_message_text(
-        text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb
-    )
+    await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
 
 
 async def cb_stats_jobs(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -156,24 +137,22 @@ async def cb_stats_jobs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not jobs:
         await query.edit_message_text(
             "📡 *Recent Broadcasts*\n\nNo broadcasts yet.",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=back_kb("stats"),
+            parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb("stats"),
         )
         return
 
     lines = ["📡 *Recent Broadcasts (Last 10)*\n"]
     for j in jobs:
         ts = j["ran_at"].strftime("%d/%m %H:%M")
-        rate = round(j["sent_count"] / (j["sent_count"] + j["failed_count"]) * 100) if (j["sent_count"] + j["failed_count"]) > 0 else 0
+        rate = round(j["sent_count"] / (j["sent_count"] + j["failed_count"]) * 100) \
+               if (j["sent_count"] + j["failed_count"]) > 0 else 0
         lines.append(
-            f"`{ts}` — `{j['account_phone'][-4:]}`\n"
+            f"`{ts}` — `...{j['account_phone'][-4:]}`\n"
             f"  ✅ {j['sent_count']} / 🏘 {j['group_count']} ({rate}%)"
         )
 
     await query.edit_message_text(
-        "\n".join(lines),
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=back_kb("stats"),
+        "\n".join(lines), parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb("stats"),
     )
 
 
@@ -186,19 +165,18 @@ async def cb_smart_delay(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not await db.is_premium(user.id):
         await query.edit_message_text(
-            "🔒 *Smart Delay is a Premium Feature*\n\nUpgrade to set custom delay between messages.",
+            "🔒 *Smart Delay is a Premium Feature*",
             parse_mode=ParseMode.MARKDOWN, reply_markup=_require_premium_kb()
         )
         return
 
     settings = await db.get_settings(user.id) or {}
+    delay = settings.get("smart_delay_seconds", 3)
     await query.edit_message_text(
-        f"⚡ *Smart Delay*\n\n"
-        f"Current: `{settings.get('smart_delay_seconds', 3)}s` between each group message.\n\n"
-        "Lower = faster (risk of flood ban)\nHigher = safer\n\n"
-        "Select delay:",
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=smart_delay_kb(),
+        f"⚡ *Smart Delay*\n\nCurrent: `{delay}s`\n\n"
+        "Adds a delay between each group message to avoid flood bans.\n\n"
+        "Select delay duration:",
+        parse_mode=ParseMode.MARKDOWN, reply_markup=smart_delay_kb()
     )
 
 
@@ -206,12 +184,12 @@ async def cb_delay_preset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user = update.effective_user
-    seconds = int(query.data.split("_")[1])
+    seconds = int(query.data.replace("delay_", ""))
     await db.set_smart_delay(user.id, seconds)
     await db.add_log(user.id, "smart_delay_set", f"{seconds}s")
     await query.edit_message_text(
-        f"✅ *Smart Delay set to {seconds}s!*\n\nMessages will be sent with {seconds}s gap.",
-        parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb("smart_delay")
+        f"✅ *Smart Delay set to {seconds} seconds!*",
+        parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb("premium")
     )
 
 
@@ -220,7 +198,7 @@ async def cb_custom_delay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     context.user_data[SET_DELAY_STATE] = True
     await query.edit_message_text(
-        "✏️ *Custom Delay*\n\nEnter delay in seconds (1–120):\nType /cancel to go back.",
+        "⚡ *Custom Delay*\n\nType the delay in seconds (1–120):",
         parse_mode=ParseMode.MARKDOWN, reply_markup=back_and_cancel_kb()
     )
 
@@ -231,13 +209,18 @@ async def handle_delay_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user = update.effective_user
     text = update.message.text.strip()
     context.user_data.pop(SET_DELAY_STATE, None)
-    if not text.isdigit() or not (1 <= int(text) <= 120):
-        await update.message.reply_text("❌ Enter a number between 1 and 120.", reply_markup=back_kb("smart_delay"))
+    try:
+        seconds = int(text)
+        assert 1 <= seconds <= 120
+    except Exception:
+        await update.message.reply_text("❌ Enter a number between 1 and 120.",
+                                        reply_markup=back_kb("premium"))
         return True
-    seconds = int(text)
     await db.set_smart_delay(user.id, seconds)
+    await db.add_log(user.id, "smart_delay_set", f"{seconds}s")
     await update.message.reply_text(
-        f"✅ *Smart Delay: {seconds}s!*", parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb("premium")
+        f"✅ *Smart Delay set to {seconds} seconds!*",
+        parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb("premium")
     )
     return True
 
@@ -263,8 +246,8 @@ async def cb_rotation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await db.add_log(user.id, "rotation_toggled", "ON" if new_val else "OFF")
     await query.edit_message_text(
         f"🔄 *Account Rotation: {'🟢 ON' if new_val else '🔴 OFF'}*\n\n"
-        + ("Groups will be distributed evenly across all accounts.\n_Reduces flood risk!_" if new_val
-           else "All accounts will send to all groups."),
+        + ("Groups distributed evenly across accounts.\n_Reduces flood risk!_" if new_val
+           else "All accounts send to all groups."),
         parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb("premium")
     )
 
@@ -287,10 +270,8 @@ async def cb_signature(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current = settings.get("message_signature") or "—"
     context.user_data[SET_SIGNATURE_STATE] = True
     await query.edit_message_text(
-        f"💎 *Message Signature*\n\n"
-        f"Current: _{current}_\n\n"
-        "This text is auto-appended to every ad message.\n"
-        "Send `clear` to remove. Type /cancel to go back.",
+        f"💎 *Message Signature*\n\nCurrent: _{current}_\n\n"
+        "Auto-appended to every ad. Send `clear` to remove.",
         parse_mode=ParseMode.MARKDOWN, reply_markup=back_and_cancel_kb()
     )
 
@@ -301,19 +282,23 @@ async def handle_signature_input(update: Update, context: ContextTypes.DEFAULT_T
     user = update.effective_user
     text = update.message.text.strip()
     context.user_data.pop(SET_SIGNATURE_STATE, None)
+
     if text.lower() == "clear":
         await db.set_message_signature(user.id, None)
-        await update.message.reply_text("✅ Signature removed.", reply_markup=back_kb("premium"))
-    else:
-        await db.set_message_signature(user.id, text)
-        await update.message.reply_text(
-            f"✅ *Signature set:*\n_{text}_",
-            parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb("premium")
-        )
+        await update.message.reply_text("✅ *Signature cleared!*",
+                                        parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb("premium"))
+        return True
+
+    await db.set_message_signature(user.id, text)
+    await db.add_log(user.id, "signature_set", f"Length: {len(text)}")
+    await update.message.reply_text(
+        f"✅ *Signature saved!*\n\n_{text}_",
+        parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb("premium")
+    )
     return True
 
 
-# ─── Active Hours ─────────────────────────────────────────────────────────────
+# ─── Active Hours ────────────────────────────────────────────────────────────
 
 async def cb_active_hours(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -328,18 +313,12 @@ async def cb_active_hours(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     settings = await db.get_settings(user.id) or {}
-    sh = settings.get("active_hours_start", 0)
-    eh = settings.get("active_hours_end", 23)
-    now = datetime.utcnow().hour
-    context.user_data[SET_HOURS_STATE] = True
+    start = settings.get("active_hours_start", 0)
+    end = settings.get("active_hours_end", 23)
     await query.edit_message_text(
-        f"🌙 *Active Hours (UTC)*\n\n"
-        f"Current: *{sh:02d}:00 — {eh:02d}:59 UTC*\n"
-        f"Now: *{now:02d}:xx UTC*\n\n"
-        "Bot only sends ads during active hours.\n\n"
-        "Send: `START END`  e.g. `8 22`\n"
-        "Send `0 23` for all hours. Type /cancel.",
-        parse_mode=ParseMode.MARKDOWN, reply_markup=back_and_cancel_kb()
+        f"🌙 *Active Hours*\n\nCurrent: `{start:02d}:00 – {end:02d}:59 UTC`\n\n"
+        "Ads only sent during selected hours. Select a preset or type custom:",
+        parse_mode=ParseMode.MARKDOWN, reply_markup=active_hours_kb()
     )
 
 
@@ -349,23 +328,57 @@ async def handle_active_hours_input(update: Update, context: ContextTypes.DEFAUL
     user = update.effective_user
     text = update.message.text.strip()
     context.user_data.pop(SET_HOURS_STATE, None)
-    parts = text.split()
-    if len(parts) != 2 or not all(p.isdigit() for p in parts):
-        await update.message.reply_text("❌ Format: `START END` e.g. `8 22`", parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb("premium"))
+
+    try:
+        parts = text.replace("–", "-").split("-")
+        start, end = int(parts[0].strip()), int(parts[1].strip())
+        assert 0 <= start <= 23 and 0 <= end <= 23
+    except Exception:
+        await update.message.reply_text(
+            "❌ Format: `0-23` or `8-22`", parse_mode=ParseMode.MARKDOWN,
+            reply_markup=back_kb("premium")
+        )
         return True
-    s, e = int(parts[0]), int(parts[1])
-    if not (0 <= s <= 23 and 0 <= e <= 23 and s <= e):
-        await update.message.reply_text("❌ Both 0–23 and start ≤ end.", reply_markup=back_kb("premium"))
-        return True
-    await db.set_active_hours(user.id, s, e)
+
+    await db.set_active_hours(user.id, start, end)
+    await db.add_log(user.id, "active_hours_set", f"{start}-{end}")
     await update.message.reply_text(
-        f"✅ *Active Hours: {s:02d}:00 — {e:02d}:59 UTC*",
+        f"✅ *Active Hours set to {start:02d}:00–{end:02d}:59 UTC!*",
         parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb("premium")
     )
     return True
 
 
-# ─── Scheduled Broadcast ─────────────────────────────────────────────────────
+async def cb_hours_preset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user = update.effective_user
+    data = query.data.replace("hours_", "")
+    try:
+        start, end = map(int, data.split("_"))
+    except Exception:
+        return
+    if end == 8:  # night: 22-08 spans midnight
+        start, end = 22, 8
+    await db.set_active_hours(user.id, start, end)
+    await db.add_log(user.id, "active_hours_set", f"{start}-{end}")
+    await query.edit_message_text(
+        f"✅ *Active Hours: {start:02d}:00–{end:02d}:59 UTC*",
+        parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb("premium")
+    )
+
+
+async def cb_custom_hours(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data[SET_HOURS_STATE] = True
+    await query.edit_message_text(
+        "⏰ *Custom Hours*\n\nType start-end in UTC (e.g., `8-22` or `0-23`):",
+        parse_mode=ParseMode.MARKDOWN, reply_markup=back_and_cancel_kb()
+    )
+
+
+# ─── Schedule Broadcast ───────────────────────────────────────────────────────
 
 async def cb_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -384,8 +397,7 @@ async def cb_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data[SET_SCHEDULE_STATE] = True
     await query.edit_message_text(
         f"📅 *Scheduled Broadcast*\n\nCurrent: `{current}`\n\n"
-        "Send daily broadcast time as `HH:MM` (UTC).\nExample: `09:30`\n"
-        "Send `off` to disable. Type /cancel.",
+        "Type time in UTC (e.g., `08:00` for 8 AM daily). Send `clear` to disable.",
         parse_mode=ParseMode.MARKDOWN, reply_markup=back_and_cancel_kb()
     )
 
@@ -396,17 +408,25 @@ async def handle_scheduled_time_input(update: Update, context: ContextTypes.DEFA
     user = update.effective_user
     text = update.message.text.strip()
     context.user_data.pop(SET_SCHEDULE_STATE, None)
-    if text.lower() == "off":
+
+    if text.lower() == "clear":
         await db.set_scheduled_time(user.id, None)
-        await update.message.reply_text("✅ Scheduled broadcast disabled.", reply_markup=back_kb("premium"))
+        await update.message.reply_text("✅ *Scheduled broadcast disabled!*",
+                                        parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb("premium"))
         return True
-    parts = text.split(":")
-    if len(parts) != 2 or not all(p.isdigit() for p in parts) or not (0 <= int(parts[0]) <= 23 and 0 <= int(parts[1]) <= 59):
-        await update.message.reply_text("❌ Format: `HH:MM` e.g. `09:30`", parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb("premium"))
+
+    try:
+        from datetime import datetime as dt
+        dt.strptime(text, "%H:%M")
+    except ValueError:
+        await update.message.reply_text("❌ Format: `HH:MM` (e.g., `08:00`)",
+                                        parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb("premium"))
         return True
+
     await db.set_scheduled_time(user.id, text)
+    await db.add_log(user.id, "schedule_set", text)
     await update.message.reply_text(
-        f"✅ *Scheduled Broadcast: {text} UTC daily*",
+        f"✅ *Scheduled broadcast set for {text} UTC daily!*",
         parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb("premium")
     )
     return True
@@ -430,7 +450,67 @@ async def cb_broadcast_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await run_broadcast(query, context, user)
 
 
-# ─── Group Blacklist / Remove Groups ─────────────────────────────────────────
+# ─── Remove Groups (with pagination) ─────────────────────────────────────────
+
+async def _load_and_show_groups(query_or_msg, context, user, page=0, is_query=True):
+    groups = await db.get_groups_only(user.id)
+
+    if not groups:
+        accounts = await db.get_account_sessions(user.id)
+        if not accounts:
+            text = "👥 *No accounts connected yet.*\nConnect an account first."
+            if is_query:
+                await query_or_msg.edit_message_text(text, parse_mode=ParseMode.MARKDOWN,
+                                                      reply_markup=back_kb("premium"))
+            else:
+                await query_or_msg.reply_text(text, parse_mode=ParseMode.MARKDOWN,
+                                               reply_markup=back_kb("premium"))
+            return
+
+        loading_text = "🔄 *Syncing your groups…*\n\n_Please wait a moment._"
+        if is_query:
+            await query_or_msg.edit_message_text(loading_text, parse_mode=ParseMode.MARKDOWN)
+        else:
+            await query_or_msg.reply_text(loading_text, parse_mode=ParseMode.MARKDOWN)
+
+        for phone, session_string in accounts[:3]:
+            try:
+                dialogs = await tm.get_dialogs(session_string)
+                for d in dialogs:
+                    await db.upsert_group_cache(user.id, phone, d["group_id"], d["title"],
+                                                d["is_channel"], d["member_count"])
+            except Exception as e:
+                logger.error(f"Group sync error for {phone}: {e}")
+
+        groups = await db.get_groups_only(user.id)
+
+    from config import PAGE_SIZE as PS
+    total = len(groups)
+    total_pages = max(1, (total + PS - 1) // PS)
+    page = max(0, min(page, total_pages - 1))
+    excluded_count = sum(1 for g in groups if g.get("excluded"))
+
+    text = (
+        f"🚫 *Remove Groups from Ads*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📋 Total: `{total}` | 🚫 Excluded: `{excluded_count}`\n"
+        f"📄 Page {page + 1}/{total_pages}\n\n"
+        f"✅ = Included in ads\n"
+        f"❌ = Excluded from ads\n\n"
+        "Tap a group to toggle:"
+    )
+
+    if is_query:
+        await query_or_msg.edit_message_text(
+            text, parse_mode=ParseMode.MARKDOWN,
+            reply_markup=group_exclude_kb(groups, page)
+        )
+    else:
+        await query_or_msg.reply_text(
+            text, parse_mode=ParseMode.MARKDOWN,
+            reply_markup=group_exclude_kb(groups, page)
+        )
+
 
 async def cb_blacklist(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -444,55 +524,25 @@ async def cb_blacklist(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    groups = await db.get_group_cache(user.id)
-    if not groups:
-        # Try to sync from accounts
-        accounts = await db.get_account_sessions(user.id)
-        if not accounts:
-            await query.edit_message_text(
-                "👥 *No accounts connected yet.*\n\nConnect an account first.",
-                parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb("premium")
-            )
-            return
+    page = 0
+    if "grp_page_" in query.data:
+        try:
+            page = int(query.data.replace("grp_page_", ""))
+        except Exception:
+            pass
 
-        await query.edit_message_text(
-            "🔄 *Syncing your groups...*\n\n_Please wait a moment._",
-            parse_mode=ParseMode.MARKDOWN,
-        )
-        import asyncio
-        for phone, session_string in accounts[:2]:  # Sync first 2 accounts
-            try:
-                dialogs = await tm.get_dialogs(session_string)
-                for d in dialogs:
-                    await db.upsert_group_cache(
-                        user.id, phone, d["group_id"], d["title"],
-                        d["is_channel"], d["member_count"]
-                    )
-            except Exception as e:
-                logger.error(f"Group sync error for {phone}: {e}")
+    await _load_and_show_groups(query, context, user, page=page, is_query=True)
 
-        groups = await db.get_group_cache(user.id)
-        if not groups:
-            await context.bot.send_message(
-                chat_id=user.id,
-                text="❌ Could not fetch groups. Try again later.",
-                reply_markup=back_kb("premium"),
-            )
-            return
 
-    excluded_count = sum(1 for g in groups if g.get("excluded"))
-    text = (
-        f"🚫 *Remove Groups from Ads*\n\n"
-        f"Total: `{len(groups)}` | Excluded: `{excluded_count}`\n\n"
-        "🟢 = Will receive ads\n"
-        "🔴 = Excluded from ads\n\n"
-        "Tap a group to toggle:"
-    )
-
-    await query.edit_message_text(
-        text, parse_mode=ParseMode.MARKDOWN,
-        reply_markup=group_exclude_kb(groups[:40])  # Show max 40
-    )
+async def cb_group_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user = update.effective_user
+    if not await db.is_premium(user.id):
+        await query.answer("🔒 Premium required.", show_alert=True)
+        return
+    page = int(query.data.replace("grp_page_", ""))
+    await _load_and_show_groups(query, context, user, page=page, is_query=True)
 
 
 async def cb_toggle_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -501,18 +551,23 @@ async def cb_toggle_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     group_id = int(query.data.replace("toggle_group_", ""))
     await db.toggle_group_exclude(user.id, group_id)
-
-    groups = await db.get_group_cache(user.id)
+    groups = await db.get_groups_only(user.id)
     excluded_count = sum(1 for g in groups if g.get("excluded"))
+    from config import PAGE_SIZE as PS
+    total = len(groups)
+    total_pages = max(1, (total + PS - 1) // PS)
+    page = context.user_data.get("grp_current_page", 0)
+    page = min(page, total_pages - 1)
     text = (
-        f"🚫 *Remove Groups from Ads*\n\n"
-        f"Total: `{len(groups)}` | Excluded: `{excluded_count}`\n\n"
-        "🟢 = Will receive ads  |  🔴 = Excluded\n\n"
-        "Tap a group to toggle:"
+        f"🚫 *Remove Groups from Ads*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📋 Total: `{total}` | 🚫 Excluded: `{excluded_count}`\n"
+        f"📄 Page {page + 1}/{total_pages}\n\n"
+        "✅ = Included | ❌ = Excluded\n\nTap to toggle:"
     )
     await query.edit_message_text(
         text, parse_mode=ParseMode.MARKDOWN,
-        reply_markup=group_exclude_kb(groups[:40])
+        reply_markup=group_exclude_kb(groups, page)
     )
 
 
@@ -520,12 +575,11 @@ async def cb_exclude_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user = update.effective_user
-    await db.set_all_groups_excluded(user.id, True)
-    groups = await db.get_group_cache(user.id)
+    await db.exclude_all_groups(user.id)
+    groups = await db.get_groups_only(user.id)
     await query.edit_message_text(
         f"🔴 *All {len(groups)} groups excluded from ads.*",
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=group_exclude_kb(groups[:40])
+        parse_mode=ParseMode.MARKDOWN, reply_markup=group_exclude_kb(groups, 0)
     )
 
 
@@ -533,12 +587,160 @@ async def cb_include_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user = update.effective_user
-    await db.set_all_groups_excluded(user.id, False)
-    groups = await db.get_group_cache(user.id)
+    await db.include_all_groups(user.id)
+    groups = await db.get_groups_only(user.id)
     await query.edit_message_text(
         f"🟢 *All {len(groups)} groups included in ads.*",
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=group_exclude_kb(groups[:40])
+        parse_mode=ParseMode.MARKDOWN, reply_markup=group_exclude_kb(groups, 0)
+    )
+
+
+# ─── Remove Channels (with pagination) ───────────────────────────────────────
+
+async def _load_and_show_channels(query_or_msg, context, user, page=0, is_query=True):
+    channels = await db.get_channels_only(user.id)
+
+    if not channels:
+        accounts = await db.get_account_sessions(user.id)
+        if not accounts:
+            text = "👥 *No accounts connected yet.*\nConnect an account first."
+            if is_query:
+                await query_or_msg.edit_message_text(text, parse_mode=ParseMode.MARKDOWN,
+                                                      reply_markup=back_kb("premium"))
+            else:
+                await query_or_msg.reply_text(text, parse_mode=ParseMode.MARKDOWN,
+                                               reply_markup=back_kb("premium"))
+            return
+
+        loading_text = "🔄 *Syncing your channels…*\n\n_Please wait a moment._"
+        if is_query:
+            await query_or_msg.edit_message_text(loading_text, parse_mode=ParseMode.MARKDOWN)
+        else:
+            await query_or_msg.reply_text(loading_text, parse_mode=ParseMode.MARKDOWN)
+
+        for phone, session_string in accounts[:3]:
+            try:
+                dialogs = await tm.get_dialogs(session_string)
+                for d in dialogs:
+                    await db.upsert_group_cache(user.id, phone, d["group_id"], d["title"],
+                                                d["is_channel"], d["member_count"])
+            except Exception as e:
+                logger.error(f"Channel sync error for {phone}: {e}")
+
+        channels = await db.get_channels_only(user.id)
+
+    if not channels:
+        text = "📢 *No channels found.*\n\nChannels appear after your accounts sync groups."
+        if is_query:
+            await query_or_msg.edit_message_text(text, parse_mode=ParseMode.MARKDOWN,
+                                                  reply_markup=back_kb("premium"))
+        else:
+            await query_or_msg.reply_text(text, parse_mode=ParseMode.MARKDOWN,
+                                           reply_markup=back_kb("premium"))
+        return
+
+    from config import PAGE_SIZE as PS
+    total = len(channels)
+    total_pages = max(1, (total + PS - 1) // PS)
+    page = max(0, min(page, total_pages - 1))
+    excluded_count = sum(1 for c in channels if c.get("excluded"))
+
+    text = (
+        f"📺 *Remove Channels from Ads*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📋 Total: `{total}` | 🚫 Excluded: `{excluded_count}`\n"
+        f"📄 Page {page + 1}/{total_pages}\n\n"
+        f"✅ = Included in ads\n"
+        f"❌ = Excluded from ads\n\n"
+        "Tap a channel to toggle:"
+    )
+
+    if is_query:
+        await query_or_msg.edit_message_text(
+            text, parse_mode=ParseMode.MARKDOWN,
+            reply_markup=channel_exclude_kb(channels, page)
+        )
+    else:
+        await query_or_msg.reply_text(
+            text, parse_mode=ParseMode.MARKDOWN,
+            reply_markup=channel_exclude_kb(channels, page)
+        )
+
+
+async def cb_channel_blacklist(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user = update.effective_user
+
+    if not await db.is_premium(user.id):
+        await query.edit_message_text(
+            "🔒 *Remove Channels is a Premium Feature*",
+            parse_mode=ParseMode.MARKDOWN, reply_markup=_require_premium_kb()
+        )
+        return
+
+    page = 0
+    await _load_and_show_channels(query, context, user, page=page, is_query=True)
+
+
+async def cb_channel_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user = update.effective_user
+    if not await db.is_premium(user.id):
+        await query.answer("🔒 Premium required.", show_alert=True)
+        return
+    page = int(query.data.replace("ch_page_", ""))
+    await _load_and_show_channels(query, context, user, page=page, is_query=True)
+
+
+async def cb_toggle_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user = update.effective_user
+    channel_id = int(query.data.replace("toggle_channel_", ""))
+    await db.toggle_group_exclude(user.id, channel_id)
+    channels = await db.get_channels_only(user.id)
+    excluded_count = sum(1 for c in channels if c.get("excluded"))
+    from config import PAGE_SIZE as PS
+    total = len(channels)
+    total_pages = max(1, (total + PS - 1) // PS)
+    page = context.user_data.get("ch_current_page", 0)
+    page = min(page, total_pages - 1)
+    text = (
+        f"📺 *Remove Channels from Ads*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📋 Total: `{total}` | 🚫 Excluded: `{excluded_count}`\n"
+        f"📄 Page {page + 1}/{total_pages}\n\n"
+        "✅ = Included | ❌ = Excluded\n\nTap to toggle:"
+    )
+    await query.edit_message_text(
+        text, parse_mode=ParseMode.MARKDOWN,
+        reply_markup=channel_exclude_kb(channels, page)
+    )
+
+
+async def cb_exclude_all_channels(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user = update.effective_user
+    await db.exclude_all_channels(user.id)
+    channels = await db.get_channels_only(user.id)
+    await query.edit_message_text(
+        f"🔴 *All {len(channels)} channels excluded from ads.*",
+        parse_mode=ParseMode.MARKDOWN, reply_markup=channel_exclude_kb(channels, 0)
+    )
+
+
+async def cb_include_all_channels(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user = update.effective_user
+    await db.include_all_channels(user.id)
+    channels = await db.get_channels_only(user.id)
+    await query.edit_message_text(
+        f"🟢 *All {len(channels)} channels included in ads.*",
+        parse_mode=ParseMode.MARKDOWN, reply_markup=channel_exclude_kb(channels, 0)
     )
 
 
@@ -558,12 +760,11 @@ async def cb_target_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     settings = await db.get_settings(user.id) or {}
     current = settings.get("target_filter", "all")
-    context.user_data[SET_TARGET_STATE] = True
 
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"{'✅' if current=='all' else '🟢'} All (Groups + Channels)", callback_data="tfilter_all")],
-        [InlineKeyboardButton(f"{'✅' if current=='groups' else '🟢'} Groups Only", callback_data="tfilter_groups")],
-        [InlineKeyboardButton(f"{'✅' if current=='channels' else '🟢'} Channels Only", callback_data="tfilter_channels")],
+        [InlineKeyboardButton(f"{'✅' if current=='all' else '⬜'} All (Groups + Channels)", callback_data="tfilter_all")],
+        [InlineKeyboardButton(f"{'✅' if current=='groups' else '⬜'} Groups Only", callback_data="tfilter_groups")],
+        [InlineKeyboardButton(f"{'✅' if current=='channels' else '⬜'} Channels Only", callback_data="tfilter_channels")],
         [InlineKeyboardButton("🔙 Back", callback_data="premium")],
     ])
     await query.edit_message_text(
@@ -580,13 +781,9 @@ async def cb_target_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await db.set_target_filter(user.id, target)
     await db.add_log(user.id, "target_filter_set", target)
     await query.edit_message_text(
-        f"✅ *Target Filter: {target.title()}*\n\nAds will only go to {target}.",
+        f"✅ *Target: {target.title()}*\n\nAds will go to {target} only.",
         parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb("premium")
     )
-
-
-async def handle_target_filter_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    return False  # Handled via callbacks
 
 
 # ─── Ad Analytics ────────────────────────────────────────────────────────────
@@ -603,9 +800,7 @@ async def cb_ad_analytics(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    accounts = await db.get_accounts(user.id)
     jobs = await db.get_recent_jobs(user.id, limit=20)
-
     per_account = {}
     for j in jobs:
         phone = j["account_phone"]
@@ -623,57 +818,44 @@ async def cb_ad_analytics(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(
             f"📱 `...{phone[-4:]}`\n"
             f"  Jobs: {data['jobs']} | ✅ {data['sent']} | ❌ {data['failed']}\n"
-            f"  {bar} {rate}%\n"
+            f"  {bar} `{rate}%`\n"
         )
 
-    if not lines[1:]:
+    if not per_account:
         lines.append("No broadcast data yet.")
 
     await query.edit_message_text(
-        "\n".join(lines),
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=back_kb("premium"),
+        "\n".join(lines), parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb("premium"),
     )
-
-
-# ─── Group Blacklist text input ───────────────────────────────────────────────
-
-async def handle_blacklist_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get(SET_BLACKLIST_STATE):
-        return False
-    user = update.effective_user
-    text = update.message.text.strip()
-    context.user_data.pop(SET_BLACKLIST_STATE, None)
-
-    if text.lower() == "clear":
-        await db.set_group_blacklist(user.id, "")
-        await update.message.reply_text("✅ *Blacklist cleared!*", parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb("premium"))
-        return True
-
-    await db.set_group_blacklist(user.id, text)
-    count = len([g for g in text.split(",") if g.strip()])
-    await update.message.reply_text(
-        f"✅ *{count} group(s) blacklisted!*", parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb("premium")
-    )
-    return True
 
 
 def register(app):
-    app.add_handler(CallbackQueryHandler(cb_premium,       pattern="^premium$"))
-    app.add_handler(CallbackQueryHandler(cb_stats,         pattern="^stats$"))
-    app.add_handler(CallbackQueryHandler(cb_stats_jobs,    pattern="^stats_jobs$"))
-    app.add_handler(CallbackQueryHandler(cb_smart_delay,   pattern="^smart_delay$"))
-    app.add_handler(CallbackQueryHandler(cb_delay_preset,  pattern=r"^delay_\d+$"))
-    app.add_handler(CallbackQueryHandler(cb_custom_delay,  pattern="^custom_delay$"))
-    app.add_handler(CallbackQueryHandler(cb_rotation,      pattern="^rotation_mode$"))
-    app.add_handler(CallbackQueryHandler(cb_signature,     pattern="^msg_signature$"))
-    app.add_handler(CallbackQueryHandler(cb_active_hours,  pattern="^active_hours$"))
-    app.add_handler(CallbackQueryHandler(cb_schedule,      pattern="^schedule_broadcast$"))
-    app.add_handler(CallbackQueryHandler(cb_broadcast_now, pattern="^broadcast_now$"))
-    app.add_handler(CallbackQueryHandler(cb_blacklist,     pattern="^group_blacklist$"))
-    app.add_handler(CallbackQueryHandler(cb_toggle_group,  pattern=r"^toggle_group_-?\d+$"))
-    app.add_handler(CallbackQueryHandler(cb_exclude_all,   pattern="^exclude_all_groups$"))
-    app.add_handler(CallbackQueryHandler(cb_include_all,   pattern="^include_all_groups$"))
-    app.add_handler(CallbackQueryHandler(cb_target_filter, pattern="^target_filter$"))
-    app.add_handler(CallbackQueryHandler(cb_target_select, pattern=r"^tfilter_"))
-    app.add_handler(CallbackQueryHandler(cb_ad_analytics,  pattern="^ad_analytics$"))
+    app.add_handler(CallbackQueryHandler(cb_premium,            pattern="^premium$"))
+    app.add_handler(CallbackQueryHandler(cb_stats,              pattern="^stats$"))
+    app.add_handler(CallbackQueryHandler(cb_stats_jobs,         pattern="^stats_jobs$"))
+    app.add_handler(CallbackQueryHandler(cb_smart_delay,        pattern="^smart_delay$"))
+    app.add_handler(CallbackQueryHandler(cb_delay_preset,       pattern=r"^delay_\d+$"))
+    app.add_handler(CallbackQueryHandler(cb_custom_delay,       pattern="^custom_delay$"))
+    app.add_handler(CallbackQueryHandler(cb_rotation,           pattern="^rotation_mode$"))
+    app.add_handler(CallbackQueryHandler(cb_signature,          pattern="^msg_signature$"))
+    app.add_handler(CallbackQueryHandler(cb_active_hours,       pattern="^active_hours$"))
+    app.add_handler(CallbackQueryHandler(cb_hours_preset,       pattern=r"^hours_"))
+    app.add_handler(CallbackQueryHandler(cb_custom_hours,       pattern="^custom_hours$"))
+    app.add_handler(CallbackQueryHandler(cb_schedule,           pattern="^schedule_broadcast$"))
+    app.add_handler(CallbackQueryHandler(cb_broadcast_now,      pattern="^broadcast_now$"))
+    # Groups
+    app.add_handler(CallbackQueryHandler(cb_blacklist,          pattern="^group_blacklist$"))
+    app.add_handler(CallbackQueryHandler(cb_group_page,         pattern=r"^grp_page_\d+$"))
+    app.add_handler(CallbackQueryHandler(cb_toggle_group,       pattern=r"^toggle_group_-?\d+$"))
+    app.add_handler(CallbackQueryHandler(cb_exclude_all,        pattern="^exclude_all_groups$"))
+    app.add_handler(CallbackQueryHandler(cb_include_all,        pattern="^include_all_groups$"))
+    # Channels
+    app.add_handler(CallbackQueryHandler(cb_channel_blacklist,  pattern="^channel_blacklist$"))
+    app.add_handler(CallbackQueryHandler(cb_channel_page,       pattern=r"^ch_page_\d+$"))
+    app.add_handler(CallbackQueryHandler(cb_toggle_channel,     pattern=r"^toggle_channel_-?\d+$"))
+    app.add_handler(CallbackQueryHandler(cb_exclude_all_channels, pattern="^exclude_all_channels$"))
+    app.add_handler(CallbackQueryHandler(cb_include_all_channels, pattern="^include_all_channels$"))
+    # Target / Analytics
+    app.add_handler(CallbackQueryHandler(cb_target_filter,      pattern="^target_filter$"))
+    app.add_handler(CallbackQueryHandler(cb_target_select,      pattern=r"^tfilter_"))
+    app.add_handler(CallbackQueryHandler(cb_ad_analytics,       pattern="^ad_analytics$"))

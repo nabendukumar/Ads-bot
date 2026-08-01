@@ -1,5 +1,8 @@
 """
 Entry point for Luci Ads Bot.
+Runs two bots concurrently:
+  - Main bot  (BOT_TOKEN)   — user-facing features
+  - Log bot   (LOG_BOT_TOKEN) — personal activity logs per user
 """
 import sys
 import os
@@ -8,14 +11,18 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import logging
 import warnings
 import asyncio
+from telegram import BotCommand
 from telegram.ext import Application
 
 warnings.filterwarnings("ignore", message=".*per_message.*", category=UserWarning)
 
 import database as db
 import log_sender
-from config import BOT_TOKEN, LOG_BOT_TOKEN, LOG_CHAT_ID, BOT_USERNAME_CLEAN
+from config import BOT_TOKEN, LOG_BOT_TOKEN, LOG_CHAT_ID, BOT_USERNAME_CLEAN, ADMIN_ID
 from handlers import start, accounts, ads, logs, auto_reply, premium, buy_premium
+from handlers import admin as admin_handler
+from handlers import language as lang_handler
+from handlers import log_bot as log_bot_handler
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -28,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 
 async def post_init(application: Application):
-    """Initialize DB schema and log bot on startup."""
+    """Initialize DB schema, log bot, and bot commands on startup."""
     try:
         await db.db(db.init_schema)
         logger.info("Database schema initialized ✅")
@@ -37,10 +44,22 @@ async def post_init(application: Application):
 
     log_sender.init_log_bot(LOG_BOT_TOKEN, LOG_CHAT_ID)
 
-    await log_sender.send_log(
+    await log_sender.send_admin_log(
         action="bot_started",
         details="Luci Ads Bot is online 🟢",
     )
+
+    # Set bot command menu
+    try:
+        await application.bot.set_my_commands([
+            BotCommand("start",   "🚀 Start the bot & open dashboard"),
+            BotCommand("stop",    "⏹️ Stop all running ads"),
+            BotCommand("admin",   "🛟 Contact admin support"),
+            BotCommand("language","🌐 Change language"),
+        ])
+        logger.info("Bot commands menu set ✅")
+    except Exception as e:
+        logger.warning(f"Could not set bot commands: {e}")
 
     # Schedule periodic bio check (every 2 hours)
     application.job_queue.run_repeating(
@@ -50,7 +69,7 @@ async def post_init(application: Application):
         name="bio_check",
     )
 
-    # Start health server for Render keep-alive
+    # Start health server
     try:
         from health import start_health_server
         asyncio.create_task(start_health_server())
@@ -74,7 +93,6 @@ async def _bio_check_job(context):
                     continue
 
                 if not has_bio and acc.get("bio_ok", True):
-                    # Bio removed — deactivate account
                     await db.set_account_bio_ok(user_id, phone, False)
                     await log_sender.send_bio_violation(user_id, "", phone)
                     await db.add_log(user_id, "bio_violation", f"Phone: {phone}")
@@ -97,7 +115,6 @@ async def _bio_check_job(context):
                     except Exception:
                         pass
                 elif has_bio and not acc.get("bio_ok", True):
-                    # Bio restored — reactivate
                     await db.set_account_bio_ok(user_id, phone, True)
                     await db.add_log(user_id, "bio_restored", f"Phone: {phone}")
                     logger.info(f"Bio restored: user {user_id}, phone {phone}")
@@ -107,8 +124,9 @@ async def _bio_check_job(context):
         logger.error(f"Bio check job error: {e}")
 
 
-def main():
-    logger.info("🚀 Starting Luci Ads Bot...")
+async def run_main_bot():
+    """Build and run the main user-facing bot."""
+    logger.info("🚀 Starting Luci Ads Bot (main)...")
 
     app = (
         Application.builder()
@@ -117,6 +135,7 @@ def main():
         .build()
     )
 
+    # Core handlers
     start.register(app)
     accounts.register(app)
     ads.register(app)
@@ -125,10 +144,106 @@ def main():
     premium.register(app)
     buy_premium.register(app)
 
-    logger.info("All handlers registered ✅")
-    logger.info("Bot polling started 🤖")
+    # New handlers
+    admin_handler.register(app)
+    lang_handler.register(app)
 
-    app.run_polling(drop_pending_updates=True, close_loop=False)
+    # Admin text input handler (must be last — checks states)
+    from telegram.ext import MessageHandler, filters
+    app.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        _dispatch_text_handlers,
+    ))
+
+    logger.info("All handlers registered ✅")
+    logger.info("Main bot polling started 🤖")
+
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling(drop_pending_updates=True)
+    return app
+
+
+async def run_log_bot():
+    """Build and run the personal log bot."""
+    if not LOG_BOT_TOKEN:
+        logger.warning("LOG_BOT_TOKEN not set — log bot not started.")
+        return None
+
+    logger.info("🟢 Starting Luci Ads Log Bot...")
+    log_app = log_bot_handler.build_log_bot_app(LOG_BOT_TOKEN)
+
+    # Set log bot commands
+    async def _post_init_log_bot(application):
+        await log_bot_handler.setup_log_bot_commands(application.bot)
+
+    log_app.post_init = _post_init_log_bot
+
+    await log_app.initialize()
+    await log_app.start()
+    await log_app.updater.start_polling(drop_pending_updates=True)
+    logger.info("Log bot polling started ✅")
+    return log_app
+
+
+async def _dispatch_text_handlers(update, context):
+    """Route text messages to all state-based handlers in priority order."""
+    from handlers.accounts import handle_message as handle_account_message
+    from handlers.ads import handle_ad_message
+    from handlers.auto_reply import handle_auto_reply_message
+    from handlers.premium import (
+        handle_delay_input, handle_signature_input,
+        handle_active_hours_input, handle_scheduled_time_input,
+    )
+
+    # /cancel shortcut
+    text = (update.message.text or "").strip()
+    if text == "/cancel":
+        context.user_data.clear()
+        from handlers.start import show_main_menu
+        await show_main_menu(update, context)
+        return
+
+    # Admin input first (checks ADMIN_ID internally)
+    if await admin_handler.handle_admin_input(update, context):
+        return
+
+    # Account login flow (phone → OTP → password, all handled in handle_message)
+    if await handle_account_message(update, context):
+        return
+
+    # Ad / auto-reply / premium feature inputs
+    for fn in [
+        handle_ad_message,
+        handle_auto_reply_message,
+        handle_delay_input,
+        handle_signature_input,
+        handle_active_hours_input,
+        handle_scheduled_time_input,
+    ]:
+        if await fn(update, context):
+            return
+
+
+def main():
+    """Run both bots concurrently in the same event loop."""
+    async def _run_all():
+        main_app = await run_main_bot()
+        log_app = await run_log_bot()
+
+        try:
+            # Keep running until interrupted
+            await asyncio.Event().wait()
+        finally:
+            await main_app.updater.stop()
+            await main_app.stop()
+            await main_app.shutdown()
+            if log_app:
+                await log_app.updater.stop()
+                await log_app.stop()
+                await log_app.shutdown()
+
+    asyncio.run(_run_all())
 
 
 if __name__ == "__main__":
