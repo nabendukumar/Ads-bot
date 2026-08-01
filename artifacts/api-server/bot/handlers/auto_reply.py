@@ -86,10 +86,20 @@ async def cb_toggle_auto_reply(update: Update, context: ContextTypes.DEFAULT_TYP
 
     if new_state:
         accounts = await db.get_account_sessions(user.id)
+        if not accounts:
+            await db.set_auto_reply(user.id, False)
+            await query.edit_message_text(
+                "❌ <b>Connect at least one Telegram account before enabling Auto Reply.</b>",
+                parse_mode=ParseMode.HTML,
+                reply_markup=auto_reply_kb(False),
+            )
+            return
         _, reply_msg, inactive_minutes = _settings_text(settings)
+        started = 0
+        failed_phones = []
         for phone, session_string in accounts:
             try:
-                await tm.setup_auto_reply(
+                started_ok = await tm.setup_auto_reply(
                     user_id=user.id,
                     phone=phone,
                     session_string=session_string,
@@ -99,8 +109,25 @@ async def cb_toggle_auto_reply(update: Update, context: ContextTypes.DEFAULT_TYP
                     get_last_active_fn=db.get_user_last_active,
                     get_auto_reply_settings_fn=db.get_settings,
                 )
+                if started_ok:
+                    started += 1
+                else:
+                    failed_phones.append(phone)
             except Exception as e:
                 logger.error(f"Auto reply setup error for {phone}: {e}")
+                failed_phones.append(phone)
+
+        if accounts and started == 0:
+            await db.set_auto_reply(user.id, False)
+            await db.add_log(user.id, "auto_reply_setup_failed", ", ".join(failed_phones))
+            await query.edit_message_text(
+                "❌ <b>Auto Reply could not start.</b>\n\n"
+                "The connected Telegram account could not be logged in. "
+                "Please reconnect the account and try again.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=auto_reply_kb(False),
+            )
+            return
     else:
         await tm.teardown_all_auto_reply(user.id)
 
@@ -113,6 +140,11 @@ async def cb_toggle_auto_reply(update: Update, context: ContextTypes.DEFAULT_TYP
         f"<b>Inactive Time:</b> <code>{inactive_minutes} minutes</code>\n\n"
         f"<b>Current Reply Message:</b>\n{escape(msg)}"
     )
+    if new_state and accounts and failed_phones:
+        text += (
+            f"\n\n⚠️ Running for {started}/{len(accounts)} account(s). "
+            "Some accounts could not connect."
+        )
     await query.edit_message_text(
         text, parse_mode=ParseMode.HTML, reply_markup=auto_reply_kb(enabled)
     )

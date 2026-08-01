@@ -21,6 +21,8 @@ _login_clients: dict = {}
 
 # Active persistent clients for auto-reply: f"{user_id}_{phone}" -> TelegramClient
 _active_clients: dict = {}
+_auto_reply_tasks: dict = {}
+_auto_reply_stop_events: dict = {}
 
 
 def _make_client(session=None):
@@ -304,8 +306,17 @@ async def setup_auto_reply(
     get_auto_reply_settings_fn=None,
 ) -> bool:
     key = f"{user_id}_{phone}"
-    if key in _active_clients:
+    existing_client = _active_clients.get(key)
+    existing_task = _auto_reply_tasks.get(key)
+    if (
+        existing_client
+        and existing_task
+        and not existing_task.done()
+        and existing_client.is_connected()
+    ):
         return True
+    if existing_client or existing_task:
+        await teardown_auto_reply(user_id, phone)
 
     client = _make_client(StringSession(session_string))
     try:
@@ -316,10 +327,13 @@ async def setup_auto_reply(
         logger.error(f"Auto-reply client connect error for {phone}: {e}")
         return False
 
-    @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
+    # Register the event explicitly instead of relying on decorator state.
+    # This keeps the handler attached when a persistent client reconnects.
     async def handler(event):
         try:
             import datetime
+            if not event.is_private:
+                return
             current_message = reply_message
             current_inactive_minutes = inactivity_minutes
             if get_auto_reply_settings_fn:
@@ -339,29 +353,75 @@ async def setup_auto_reply(
                 if diff < current_inactive_minutes * 60:
                     return
             await event.reply(current_message)
+            logger.info(
+                "Auto-reply sent for user %s via account %s",
+                user_id,
+                phone,
+            )
         except Exception as ex:
-            logger.error(f"Auto-reply error: {ex}")
+            logger.exception("Auto-reply error for account %s: %s", phone, ex)
 
+    client.add_event_handler(handler, events.NewMessage(incoming=True))
     _active_clients[key] = client
-    asyncio.create_task(client.run_until_disconnected())
+    stop_event = asyncio.Event()
+    _auto_reply_stop_events[key] = stop_event
+    _auto_reply_tasks[key] = asyncio.create_task(
+        _keep_auto_reply_connected(key, client, stop_event),
+        name=f"auto-reply-{user_id}-{phone}",
+    )
     return True
+
+
+async def _keep_auto_reply_connected(key, client, stop_event):
+    """Keep an auto-reply client alive across transient Telegram disconnects."""
+    while not stop_event.is_set():
+        try:
+            if not client.is_connected():
+                await client.connect()
+            if not await client.is_user_authorized():
+                logger.error("Auto-reply account is no longer authorized: %s", key)
+                break
+            await client.run_until_disconnected()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception("Auto-reply connection failed for %s: %s", key, exc)
+
+        if not stop_event.is_set():
+            await asyncio.sleep(5)
+
+    if not stop_event.is_set():
+        _active_clients.pop(key, None)
+        _auto_reply_tasks.pop(key, None)
+        _auto_reply_stop_events.pop(key, None)
 
 
 async def teardown_auto_reply(user_id: int, phone: str):
     key = f"{user_id}_{phone}"
-    if key in _active_clients:
+    stop_event = _auto_reply_stop_events.pop(key, None)
+    if stop_event:
+        stop_event.set()
+    task = _auto_reply_tasks.pop(key, None)
+    if task and task is not asyncio.current_task():
+        task.cancel()
         try:
-            await _active_clients[key].disconnect()
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+    client = _active_clients.pop(key, None)
+    if client:
+        try:
+            await client.disconnect()
         except Exception:
             pass
-        del _active_clients[key]
 
 
 async def teardown_all_auto_reply(user_id: int):
     to_remove = [k for k in _active_clients if k.startswith(f"{user_id}_")]
+    to_remove.extend(
+        key for key in _auto_reply_tasks
+        if key.startswith(f"{user_id}_") and key not in to_remove
+    )
     for key in to_remove:
-        try:
-            await _active_clients[key].disconnect()
-        except Exception:
-            pass
-        del _active_clients[key]
+        _, phone = key.split("_", 1)
+        await teardown_auto_reply(user_id, phone)
