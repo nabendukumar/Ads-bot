@@ -138,11 +138,38 @@ def init_schema(cur):
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS ban_reason TEXT DEFAULT NULL",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS log_chat_id BIGINT DEFAULT NULL",
     ]
-    for m in migrations:
+    migration_errors = []
+    for index, m in enumerate(migrations):
+        savepoint = f"schema_migration_{index}"
         try:
+            cur.execute(f"SAVEPOINT {savepoint}")
             cur.execute(m)
-        except Exception:
-            pass
+            cur.execute(f"RELEASE SAVEPOINT {savepoint}")
+        except Exception as exc:
+            migration_errors.append((m, exc))
+            cur.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+            cur.execute(f"RELEASE SAVEPOINT {savepoint}")
+
+    # CREATE TABLE IF NOT EXISTS does not update tables created by an older
+    # version of the bot. Verify the columns required by current handlers
+    # before allowing the bot to start serving updates.
+    cur.execute("""
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_name = 'users'
+          AND column_name IN ('is_banned', 'ban_reason', 'language', 'log_chat_id')
+    """)
+    user_columns = {row[0] for row in cur.fetchall()}
+    required_user_columns = {"is_banned", "ban_reason", "language", "log_chat_id"}
+    missing_columns = required_user_columns - user_columns
+    if missing_columns:
+        raise RuntimeError(
+            "Database schema is incomplete; missing users columns: "
+            + ", ".join(sorted(missing_columns))
+        )
+    if migration_errors:
+        failed = "; ".join(migration for migration, _ in migration_errors)
+        raise RuntimeError(f"Database migrations failed: {failed}")
 
 
 # ─── Users ────────────────────────────────────────────────────────────────────

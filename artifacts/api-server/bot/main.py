@@ -36,11 +36,23 @@ logger = logging.getLogger(__name__)
 
 async def post_init(application: Application):
     """Initialize DB schema, log bot, and bot commands on startup."""
+    # The bot uses a manually managed Application lifecycle instead of
+    # run_polling(), so python-telegram-bot does not invoke post_init for us.
+    # Start the listener first so Render can detect the web service port while
+    # the database performs its idempotent migrations.
+    try:
+        from health import start_health_server
+        asyncio.create_task(start_health_server())
+        logger.info("Health server started ✅")
+    except Exception as e:
+        logger.warning(f"Health server not started: {e}")
+
     try:
         await db.db(db.init_schema)
         logger.info("Database schema initialized ✅")
     except Exception as e:
-        logger.error(f"DB init error: {e}")
+        logger.exception("DB init error")
+        raise RuntimeError("Database initialization failed; refusing to start") from e
 
     log_sender.init_log_bot(LOG_BOT_TOKEN, LOG_CHAT_ID)
 
@@ -68,15 +80,6 @@ async def post_init(application: Application):
         first=300,
         name="bio_check",
     )
-
-    # Start health server
-    try:
-        from health import start_health_server
-        asyncio.create_task(start_health_server())
-        logger.info("Health server started ✅")
-    except Exception as e:
-        logger.warning(f"Health server not started: {e}")
-
 
 async def _bio_check_job(context):
     """Check if bot username still present in all connected accounts' bio/name."""
@@ -173,6 +176,7 @@ async def run_main_bot():
     logger.info("All handlers registered ✅")
 
     await app.initialize()
+    await post_init(app)
 
     # ← KEY FIX: kick out any stale polling session before starting ours
     await _delete_webhook_safe(app.bot, "main-bot")
