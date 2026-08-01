@@ -65,6 +65,7 @@ def init_schema(cur):
         is_running BOOLEAN DEFAULT FALSE,
         auto_reply_message TEXT DEFAULT 'Main abhi available nahi hoon. Thodi der baad message karein.',
         auto_reply_enabled BOOLEAN DEFAULT FALSE,
+        auto_reply_inactive_minutes INTEGER DEFAULT 30,
         smart_delay_seconds INTEGER DEFAULT 3,
         group_blacklist TEXT DEFAULT '',
         rotation_mode BOOLEAN DEFAULT FALSE,
@@ -137,6 +138,7 @@ def init_schema(cur):
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_banned BOOLEAN DEFAULT FALSE",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS ban_reason TEXT DEFAULT NULL",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS log_chat_id BIGINT DEFAULT NULL",
+        "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS auto_reply_inactive_minutes INTEGER DEFAULT 30",
     ]
     migration_errors = []
     for index, m in enumerate(migrations):
@@ -435,6 +437,19 @@ def _set_auto_reply(cur, user_id, enabled, message=None):
 
 async def set_auto_reply(user_id, enabled, message=None):
     await db(_set_auto_reply, user_id, enabled, message)
+
+
+def _set_auto_reply_inactive_minutes(cur, user_id, minutes):
+    cur.execute("""
+        INSERT INTO user_settings (user_id, auto_reply_inactive_minutes)
+        VALUES (%s, %s)
+        ON CONFLICT (user_id) DO UPDATE
+        SET auto_reply_inactive_minutes = EXCLUDED.auto_reply_inactive_minutes
+    """, (user_id, minutes))
+
+
+async def set_auto_reply_inactive_minutes(user_id, minutes):
+    await db(_set_auto_reply_inactive_minutes, user_id, minutes)
 
 
 def _set_smart_delay(cur, user_id, seconds):

@@ -118,6 +118,7 @@ def auto_reply_kb(enabled: bool):
     return InlineKeyboardMarkup([
         [_btn(toggle,                        "toggle_auto_reply")],
         [_btn("✏️ Set Reply Message",         "set_auto_reply_msg")],
+        [_btn("⏱️ Set Inactive Time",          "set_auto_reply_time")],
         [_btn("🔙 Back",                     "menu")],
     ])
 

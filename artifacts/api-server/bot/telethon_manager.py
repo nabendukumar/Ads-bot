@@ -300,6 +300,8 @@ async def setup_auto_reply(
     reply_message: str,
     bot,
     get_last_active_fn,
+    inactivity_minutes: int = 30,
+    get_auto_reply_settings_fn=None,
 ) -> bool:
     key = f"{user_id}_{phone}"
     if key in _active_clients:
@@ -318,12 +320,25 @@ async def setup_auto_reply(
     async def handler(event):
         try:
             import datetime
+            current_message = reply_message
+            current_inactive_minutes = inactivity_minutes
+            if get_auto_reply_settings_fn:
+                settings = await get_auto_reply_settings_fn(user_id) or {}
+                if not settings.get("auto_reply_enabled", False):
+                    return
+                current_message = settings.get("auto_reply_message") or reply_message
+                current_inactive_minutes = int(
+                    settings.get("auto_reply_inactive_minutes") or inactivity_minutes
+                )
             last_active = await get_last_active_fn(user_id)
             if last_active:
-                diff = (datetime.datetime.utcnow() - last_active).total_seconds()
-                if diff < 1800:
+                now = datetime.datetime.now(datetime.timezone.utc)
+                if last_active.tzinfo is None:
+                    now = now.replace(tzinfo=None)
+                diff = (now - last_active).total_seconds()
+                if diff < current_inactive_minutes * 60:
                     return
-            await event.reply(reply_message)
+            await event.reply(current_message)
         except Exception as ex:
             logger.error(f"Auto-reply error: {ex}")
 

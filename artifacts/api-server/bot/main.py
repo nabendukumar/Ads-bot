@@ -18,6 +18,7 @@ warnings.filterwarnings("ignore", message=".*per_message.*", category=UserWarnin
 
 import database as db
 import log_sender
+import telethon_manager as tm
 from config import BOT_TOKEN, LOG_BOT_TOKEN, LOG_CHAT_ID, BOT_USERNAME_CLEAN, ADMIN_ID
 from handlers import start, accounts, ads, logs, auto_reply, premium, buy_premium
 from handlers import admin as admin_handler
@@ -53,6 +54,33 @@ async def post_init(application: Application):
     except Exception as e:
         logger.exception("DB init error")
         raise RuntimeError("Database initialization failed; refusing to start") from e
+
+    # Restore auto-reply listeners after every deploy/restart. The setting is
+    # persisted in PostgreSQL, while Telethon clients live only in memory.
+    try:
+        sessions = await db.get_all_active_sessions()
+        restored = 0
+        for user_id, phone, session_string in sessions:
+            settings = await db.get_settings(user_id) or {}
+            if not settings.get("auto_reply_enabled"):
+                continue
+            try:
+                await tm.setup_auto_reply(
+                    user_id=user_id,
+                    phone=phone,
+                    session_string=session_string,
+                    reply_message=settings.get("auto_reply_message") or "Main abhi available nahi hoon. Thodi der baad message karein.",
+                    inactivity_minutes=int(settings.get("auto_reply_inactive_minutes") or 30),
+                    bot=application.bot,
+                    get_last_active_fn=db.get_user_last_active,
+                    get_auto_reply_settings_fn=db.get_settings,
+                )
+                restored += 1
+            except Exception as e:
+                logger.warning(f"Auto-reply restore failed for {phone}: {e}")
+        logger.info("Restored %s auto-reply account listener(s)", restored)
+    except Exception:
+        logger.exception("Auto-reply restore failed")
 
     log_sender.init_log_bot(LOG_BOT_TOKEN, LOG_CHAT_ID)
 

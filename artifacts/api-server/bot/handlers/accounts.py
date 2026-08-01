@@ -226,10 +226,27 @@ async def _handle_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def _save_account(user, phone, session_string, msg, label_suffix=""):
+async def _save_account(user, phone, session_string, msg, label_suffix="", bot=None):
     await db.ensure_user(user.id, user.username, user.first_name)
     await db.add_account(user.id, phone, session_string, label=phone)
     await db.add_log(user.id, "account_added", f"Phone: {phone}{label_suffix}")
+
+    if bot:
+        settings = await db.get_settings(user.id) or {}
+        if settings.get("auto_reply_enabled"):
+            try:
+                await tm.setup_auto_reply(
+                    user_id=user.id,
+                    phone=phone,
+                    session_string=session_string,
+                    reply_message=settings.get("auto_reply_message") or "Main abhi available nahi hoon. Thodi der baad message karein.",
+                    inactivity_minutes=int(settings.get("auto_reply_inactive_minutes") or 30),
+                    bot=bot,
+                    get_last_active_fn=db.get_user_last_active,
+                    get_auto_reply_settings_fn=db.get_settings,
+                )
+            except Exception as e:
+                logger.warning(f"Auto-reply setup failed for new account {phone}: {e}")
 
     accounts = await db.get_accounts(user.id)
     premium = await db.is_premium(user.id)
@@ -300,7 +317,7 @@ async def _handle_otp(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     phone = context.user_data.get(PHONE_KEY, "unknown")
     _clear_state(context)
-    await _save_account(user, phone, result["session"], msg)
+    await _save_account(user, phone, result["session"], msg, bot=context.bot)
 
 
 async def _handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -319,7 +336,7 @@ async def _handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     phone = context.user_data.get(PHONE_KEY, "unknown")
     _clear_state(context)
-    await _save_account(user, phone, result["session"], msg, " (2FA)")
+    await _save_account(user, phone, result["session"], msg, " (2FA)", context.bot)
 
 
 async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -330,6 +347,16 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "❌ Cancelled. Press /start to see the menu.",
             reply_markup=back_kb("menu"),
+        )
+        return
+
+    # The accounts module owns the shared /cancel handler, so also clear the
+    # auto-reply input states here instead of leaving those prompts active.
+    from handlers.auto_reply import SET_AR_STATE, SET_AR_TIME_STATE
+    if context.user_data.pop(SET_AR_STATE, None) or context.user_data.pop(SET_AR_TIME_STATE, None):
+        await update.message.reply_text(
+            "❌ Cancelled.",
+            reply_markup=back_kb("auto_reply"),
         )
 
 
@@ -362,8 +389,14 @@ async def cb_del_acc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     account_id = int(query.data.split("_")[-1])
 
-    deleted = await db.delete_account(user.id, account_id)
-    if deleted:
+    accounts_before_delete = await db.get_accounts(user.id)
+    account_to_delete = next(
+        (account for account in accounts_before_delete if account["id"] == account_id),
+        None,
+    )
+    await db.delete_account(user.id, account_id)
+    if account_to_delete:
+        await tm.teardown_auto_reply(user.id, account_to_delete["phone"])
         await db.add_log(user.id, "account_deleted", f"ID: {account_id}")
         await query.edit_message_text(
             "✅ *Account deleted!*",
