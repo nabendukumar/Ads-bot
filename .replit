@@ -24,12 +24,12 @@ args = "Luci Ads Bot"
 name = "Luci Ads Bot"
 author = "agent"
 
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "cd artifacts/api-server/bot && python3 main.py"
-
 [workflows.workflow.metadata]
 outputType = "console"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd artifacts/api-server/bot && PORT=8099 python3 main.py"
 
 [agent]
 stack = "PNPM_WORKSPACE"
@@ -38,3 +38,7 @@ expertMode = true
 [postMerge]
 path = "scripts/post-merge.sh"
 timeoutMs = 20000
+
+[nix]
+channel = "stable-25_05"
+packages = ["cargo", "libiconv", "openssl", "rustc"]

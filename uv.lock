@@ -709,11 +709,11 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aiohttp", specifier = ">=3.14.3" },
-    { name = "cryptg", specifier = ">=0.6.0" },
-    { name = "psycopg2-binary", specifier = ">=2.9.12" },
-    { name = "python-telegram-bot", extras = ["job-queue"], specifier = ">=22.8" },
-    { name = "telethon", specifier = ">=1.44.0" },
+    { name = "aiohttp", specifier = ">=3.9.0" },
+    { name = "cryptg", specifier = ">=0.4.0" },
+    { name = "psycopg2-binary", specifier = ">=2.9.9" },
+    { name = "python-telegram-bot", extras = ["job-queue"], specifier = ">=21.11.1" },
+    { name = "telethon", specifier = ">=1.37.0" },
 ]
 
 [[package]]
