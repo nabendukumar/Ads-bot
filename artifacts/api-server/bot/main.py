@@ -267,9 +267,12 @@ async def _dispatch_text_handlers(update, context):
     through this one handler.  Keep this dispatcher as the single entry point
     so a message is never swallowed by one of the feature modules.
     """
-    from handlers.accounts import handle_message as handle_account_message
-
     try:
+        if not update.message or not update.message.text:
+            return
+
+        from handlers.accounts import handle_message as handle_account_message
+
         # Admin input first (checks ADMIN_ID internally)
         if await admin_handler.handle_admin_input(update, context):
             return

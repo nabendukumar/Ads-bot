@@ -10,7 +10,7 @@ import asyncio
 import logging
 from telegram import Update
 from telegram.ext import (
-    ContextTypes, CallbackQueryHandler, MessageHandler, filters, CommandHandler
+    ContextTypes, CallbackQueryHandler
 )
 from telegram.constants import ParseMode
 
@@ -152,12 +152,21 @@ async def cb_resend_otp(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ─── Message handlers ─────────────────────────────────────────────────────────
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle every non-command text input for the main bot.
+
+    This function is intentionally the only text-input entry point registered
+    by ``main.py``.  CallbackQueryHandler handles the button press, then this
+    dispatcher handles the user's next message.
+    """
     from handlers.ads import handle_ad_message
     from handlers.auto_reply import handle_auto_reply_message
     from handlers.premium import (
-        handle_delay_input, handle_blacklist_input, handle_signature_input,
-        handle_active_hours_input, handle_scheduled_time_input, handle_target_filter_input
+        handle_delay_input, handle_signature_input,
+        handle_active_hours_input, handle_scheduled_time_input,
     )
+
+    if not update.message or not update.message.text:
+        return False
 
     state = context.user_data.get(STATE)
     if state == S_PHONE:
@@ -176,17 +185,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return True
     if await handle_delay_input(update, context):
         return True
-    if await handle_blacklist_input(update, context):
-        return True
     if await handle_signature_input(update, context):
         return True
     if await handle_active_hours_input(update, context):
         return True
     if await handle_scheduled_time_input(update, context):
         return True
-    if await handle_target_filter_input(update, context):
-        return True
-
     # Returning a boolean is important because main.py uses this function as
     # the single dispatcher for all state-based text input.  Without an
     # explicit True, the same message can be processed a second time or
@@ -423,5 +427,7 @@ def register(app):
     app.add_handler(CallbackQueryHandler(cb_resend_otp, pattern="^resend_otp$"))
     app.add_handler(CallbackQueryHandler(cb_delete_account, pattern="^delete_account$"))
     app.add_handler(CallbackQueryHandler(cb_del_acc, pattern=r"^del_acc_\d+$"))
-    app.add_handler(CommandHandler("cancel", cmd_cancel))
-    # NOTE: Text MessageHandler is registered centrally in main.py via _dispatch_text_handlers
+    # All /cancel handling is registered centrally in main.py so every pending
+    # text-input flow (including ad and premium settings) is cleared reliably.
+    # Text messages are also dispatched centrally; no feature-level
+    # MessageHandler should be registered here.
