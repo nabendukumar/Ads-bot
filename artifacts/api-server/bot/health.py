@@ -19,6 +19,14 @@ async def start_health_server():
     app.router.add_get("/", handle_health)
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", PORT)
-    await site.start()
+    try:
+        site = web.TCPSite(runner, "0.0.0.0", PORT)
+        await site.start()
+    except OSError as exc:
+        # The workspace may already have the shared API service on this port.
+        # The bot itself can still poll Telegram; Render runs it alone, where
+        # the health endpoint binds normally.
+        await runner.cleanup()
+        logger.warning("Health server could not bind to port %s: %s", PORT, exc)
+        return
     logger.info(f"Health server running on port {PORT} ✅")

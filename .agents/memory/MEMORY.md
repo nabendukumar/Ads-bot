@@ -1,0 +1,1 @@
+- [Telegram text-input routing](text-input-routing.md) — all callback-followup text must use one central dispatcher and only existing input handlers.
