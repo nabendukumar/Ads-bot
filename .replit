@@ -1,4 +1,4 @@
-modules = ["nodejs-24", "python-base-3.13"]
+modules = ["nodejs-24", "python-3.11"]
 
 [deployment]
 router = "application"
@@ -24,12 +24,9 @@ args = "Luci Ads Bot"
 name = "Luci Ads Bot"
 author = "agent"
 
-[workflows.workflow.metadata]
-outputType = "console"
-
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "cd artifacts/api-server/bot && PORT=8099 python3 main.py"
+args = "cd artifacts/api-server/bot && DATABASE_URL=$DATABASE_URL BOT_TOKEN=$BOT_TOKEN API_ID=$API_ID API_HASH=$API_HASH LOG_BOT_TOKEN=$LOG_BOT_TOKEN ADMIN_ID=$ADMIN_ID BOT_USERNAME=$BOT_USERNAME python main.py"
 
 [agent]
 stack = "PNPM_WORKSPACE"
@@ -38,6 +35,14 @@ expertMode = true
 [postMerge]
 path = "scripts/post-merge.sh"
 timeoutMs = 20000
+
+[userenv]
+
+[userenv.shared]
+ADMIN_ID = "8493051039"
+API_ID = "35744798"
+BOT_USERNAME = "@LuciAdsBot"
+FORCE_JOIN_GROUP = "0"
 
 [nix]
 channel = "stable-25_05"

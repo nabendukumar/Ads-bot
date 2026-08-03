@@ -1,45 +1,52 @@
-# [Project name]
+# Luci Ads Bot
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+Telegram bot jo automatically ads send karta hai multiple connected accounts se sab groups mein.
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
-- `pnpm run typecheck` — full typecheck across all packages
-- `pnpm run build` — typecheck + build all packages
-- `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
-- `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
+- Bot files: `artifacts/api-server/bot/`
+- `python artifacts/api-server/bot/main.py` — bot run karo
+- Render deploy: `render.yaml` already configured
 
 ## Stack
 
-- pnpm workspaces, Node.js 24, TypeScript 5.9
-- API: Express 5
-- DB: PostgreSQL + Drizzle ORM
-- Validation: Zod (`zod/v4`), `drizzle-zod`
-- API codegen: Orval (from OpenAPI spec)
-- Build: esbuild (CJS bundle)
+- Python 3.11+, python-telegram-bot 21+, Telethon 1.37+
+- PostgreSQL + psycopg2
+- Render (worker service)
 
-## Where things live
+## Bot Features
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+1. **Logs** — Log Bot pe redirect hota hai, main bot mein nahi
+2. **Bio Update** — Account connect hone pe bot username name/bio mein add hota hai; remove karne pe auto-deactivate
+3. **Resend OTP** — OTP screen pe resend button
+4. **Account Limit** — Free: 2 accounts, Premium: 10 accounts
+5. **Buy Premium** — UPI payment (nabendu8@ptyes), admin approve/reject; Plans: ₹10/7d, ₹20/10d, ₹50/30d
+6. **Premium Features** — Smart Delay, Rotation, Signature, Active Hours, Schedule, Broadcast Now, Remove Groups, Target Filter, Ad Analytics
+7. **Remove Groups** — Group list sync + toggle exclude per group
+8. **Detailed Stats** — Groups, channels, excluded count, per-account analytics
+9. **Green/Red Buttons** — 🟢 active / 🔴 danger inline buttons
 
-## Architecture decisions
+## Environment Variables Required (Render)
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
-
-## Product
-
-_Describe the high-level user-facing capabilities of this app once they exist._
+- `BOT_TOKEN` — Main bot token
+- `LOG_BOT_TOKEN` — Log bot token
+- `API_ID` — Telegram API ID
+- `API_HASH` — Telegram API Hash
+- `DATABASE_URL` — PostgreSQL connection string
+- `ADMIN_ID` — Admin Telegram user ID
+- `LOG_CHAT_ID` — Log chat ID (defaults to ADMIN_ID)
+- `BOT_USERNAME` — e.g. `@LuciAdsBot`
+- `LOG_BOT_USERNAME` — Log bot username for redirect link
+- `UPI_ID` — UPI payment ID (default: nabendu8@ptyes)
 
 ## User preferences
 
-_Populate as you build — explicit user instructions worth remembering across sessions._
+- Hindi/Hinglish mein communicate karo
+- Render pe host karna hai
+- Premium animations chahiye
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
-
-## Pointers
-
-- See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details
+- Bio check job har 2 ghante mein chalta hai
+- Free users 2 accounts se zyada connect nahi kar sakte
+- Admin ID: 8493051039
