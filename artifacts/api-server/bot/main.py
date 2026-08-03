@@ -271,6 +271,13 @@ async def _dispatch_text_handlers(update, context):
         if not update.message or not update.message.text:
             return
 
+        # Users can open a callback prompt without having completed /start
+        # first.  Settings and input-flow writes reference the users table,
+        # so always establish the user record before dispatching typed input.
+        user = update.effective_user
+        if user:
+            await db.ensure_user(user.id, user.username, user.first_name)
+
         from handlers.accounts import handle_message as handle_account_message
 
         # Admin input first (checks ADMIN_ID internally)
