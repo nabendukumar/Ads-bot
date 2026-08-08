@@ -418,6 +418,7 @@ def admin_chats_kb(user_id: int, account_id: int, chats: list, page: int = 0):
 
 def admin_chat_messages_kb(user_id: int, account_id: int, chat_id: int):
     return InlineKeyboardMarkup([
+        [_btn("💬 Reply in this chat", f"admin_reply_{user_id}_{account_id}_{chat_id}", S_SUCCESS)],
         [_btn("🔄 Refresh", f"admin_chat_{user_id}_{account_id}_{chat_id}", S_PRIMARY)],
         [_btn("🔙 Back to Chats", f"admin_acc_chats_{user_id}_{account_id}", S_PRIMARY)],
     ])

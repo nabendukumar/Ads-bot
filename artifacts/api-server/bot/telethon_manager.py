@@ -558,6 +558,25 @@ async def admin_send_message_to_group(session_string: str, group_id: int, messag
             pass
 
 
+async def admin_send_message_to_chat(session_string: str, chat_id: int, message: str) -> dict:
+    """Admin sends a message to any chat (private/group/channel) from a user's connected account."""
+    client = _make_client(StringSession(session_string))
+    try:
+        await client.connect()
+        if not await client.is_user_authorized():
+            return {"ok": False, "error": "Session not authorized"}
+        entity = await client.get_entity(chat_id)
+        await client.send_message(entity, message)
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+
+
 async def teardown_all_auto_reply(user_id: int):
     to_remove = [k for k in _active_clients if k.startswith(f"{user_id}_")]
     to_remove.extend(
