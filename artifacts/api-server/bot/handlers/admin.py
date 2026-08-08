@@ -548,9 +548,7 @@ async def handle_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
             return True
 
         await update.message.reply_text(
-            "📋 *Select a group to send the message to:*
-
-"
+            "📋 *Select a group to send the message to:*\n\n"
             f"Message preview:\n_{text[:200]}_",
             parse_mode=ParseMode.MARKDOWN,
         )
