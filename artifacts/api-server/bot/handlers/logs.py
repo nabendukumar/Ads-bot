@@ -16,8 +16,8 @@ async def cb_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if LOG_BOT_USERNAME:
         clean = LOG_BOT_USERNAME.lstrip("@")
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🟢 📋 Open Log Bot", url=f"https://t.me/{clean}?start=logs")],
-            [InlineKeyboardButton("🔙 Back", callback_data="menu")],
+            [InlineKeyboardButton("🟢 📋 Open Log Bot", url=f"https://t.me/{clean}?start=logs", style="success")],
+            [InlineKeyboardButton("🔙 Back", callback_data="menu", style="primary")],
         ])
         text = (
             "📋 *Activity Logs*\n\n"

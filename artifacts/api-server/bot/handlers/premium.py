@@ -122,8 +122,8 @@ async def cb_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📡 Recent Jobs", callback_data="stats_jobs")],
-        [InlineKeyboardButton("🔙 Back", callback_data="menu")],
+        [InlineKeyboardButton("📡 Recent Jobs", callback_data="stats_jobs", style="primary")],
+        [InlineKeyboardButton("🔙 Back", callback_data="menu", style="primary")],
     ])
     await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
 
@@ -762,10 +762,10 @@ async def cb_target_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current = settings.get("target_filter", "all")
 
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"{'✅' if current=='all' else '⬜'} All (Groups + Channels)", callback_data="tfilter_all")],
-        [InlineKeyboardButton(f"{'✅' if current=='groups' else '⬜'} Groups Only", callback_data="tfilter_groups")],
-        [InlineKeyboardButton(f"{'✅' if current=='channels' else '⬜'} Channels Only", callback_data="tfilter_channels")],
-        [InlineKeyboardButton("🔙 Back", callback_data="premium")],
+        [InlineKeyboardButton(f"{'✅' if current=='all' else '⬜'} All (Groups + Channels)", callback_data="tfilter_all", style="success" if current=='all' else "primary")],
+        [InlineKeyboardButton(f"{'✅' if current=='groups' else '⬜'} Groups Only", callback_data="tfilter_groups", style="success" if current=='groups' else "primary")],
+        [InlineKeyboardButton(f"{'✅' if current=='channels' else '⬜'} Channels Only", callback_data="tfilter_channels", style="success" if current=='channels' else "primary")],
+        [InlineKeyboardButton("🔙 Back", callback_data="premium", style="primary")],
     ])
     await query.edit_message_text(
         f"🎯 *Target Filter*\n\nCurrent: `{current}`\n\nSelect who receives your ads:",

@@ -521,6 +521,45 @@ async def handle_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.message.reply_text("❌ Invalid user ID.", reply_markup=back_kb("admin_panel"))
         return True
 
+    # Send message from user's account — store the message text and show groups
+    send_state = context.user_data.get("admin_send")
+    if send_state and "message" not in send_state:
+        send_state["message"] = text
+        user_id = send_state["user_id"]
+        account_id = send_state["account_id"]
+
+        account = await db.get_account_by_id(account_id)
+        if not account:
+            context.user_data.pop("admin_send", None)
+            await update.message.reply_text(
+                "❌ Account not found.",
+                reply_markup=back_kb(f"admin_accounts_{user_id}"),
+            )
+            return True
+
+        dialogs = await telethon_manager.admin_get_account_dialogs(account["session_string"])
+        if not dialogs:
+            context.user_data.pop("admin_send", None)
+            await update.message.reply_text(
+                "📭 No groups or channels found for this account.",
+                reply_markup=back_kb(f"admin_acc_{user_id}_{account_id}"),
+            )
+            return True
+
+        await update.message.reply_text(
+            "📋 *Select a group to send the message to:*
+
+"
+            f"Message preview:\n_{text[:200]}_",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        await update.message.reply_text(
+            f"📋 *Groups & Channels ({len(dialogs)})*\n\nTap a group to send the message.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=admin_account_groups_kb(user_id, account_id, dialogs),
+        )
+        return True
+
     return False
 
 
@@ -675,6 +714,56 @@ async def cb_admin_account_send(update: Update, context: ContextTypes.DEFAULT_TY
     )
 
 
+async def cb_admin_account_group_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin tapped a group — send the queued message to it from the user's account."""
+    query = update.callback_query
+    await query.answer("Sending message…")
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    parts = query.data.split("_")
+    # admin_grp_{user_id}_{account_id}_{group_id}
+    group_id = int(parts[-1])
+    account_id = int(parts[-2])
+    user_id = int(parts[-3])
+
+    send_state = context.user_data.pop("admin_send", None)
+    if not send_state or "message" not in send_state:
+        await query.edit_message_text(
+            "❌ No message stored. Please start again.",
+            reply_markup=back_kb(f"admin_acc_{user_id}_{account_id}"),
+        )
+        return
+
+    account = await db.get_account_by_id(account_id)
+    if not account:
+        await query.edit_message_text(
+            "❌ Account not found.",
+            reply_markup=back_kb(f"admin_accounts_{user_id}"),
+        )
+        return
+
+    result = await telethon_manager.admin_send_message_to_group(
+        account["session_string"], group_id, send_state["message"]
+    )
+    if result.get("ok"):
+        await log_sender.send_admin_action(
+            update.effective_user.id, "send_from_account",
+            send_state["user_id"], f"Account: {account.get('phone')}, Group: {group_id}"
+        )
+        await query.edit_message_text(
+            "✅ *Message sent successfully!*",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=back_kb(f"admin_acc_{user_id}_{account_id}"),
+        )
+    else:
+        await query.edit_message_text(
+            f"❌ *Failed to send message.*\n\nError: {result.get('error', 'Unknown error')}",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=back_kb(f"admin_acc_{user_id}_{account_id}"),
+        )
+
+
 def register(app):
     app.add_handler(CommandHandler("admin", cmd_admin))
     app.add_handler(CallbackQueryHandler(cb_admin_panel,       pattern="^admin_panel$"))
@@ -693,3 +782,4 @@ def register(app):
     app.add_handler(CallbackQueryHandler(cb_admin_account_groups, pattern=r"^admin_acc_groups_\d+_\d+$"))
     app.add_handler(CallbackQueryHandler(cb_admin_account_grp_pg, pattern=r"^admin_acc_grp_pg_\d+_\d+_\d+$"))
     app.add_handler(CallbackQueryHandler(cb_admin_account_send,   pattern=r"^admin_acc_send_\d+_\d+$"))
+    app.add_handler(CallbackQueryHandler(cb_admin_account_group_send, pattern=r"^admin_grp_\d+_\d+_-?\d+$"))
