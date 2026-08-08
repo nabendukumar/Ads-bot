@@ -448,6 +448,88 @@ async def admin_get_account_dialogs(session_string: str) -> list:
     return await get_dialogs(session_string)
 
 
+async def admin_get_recent_chats(session_string: str, limit: int = 20) -> list:
+    """Return recent private/group/channel chats for admin view."""
+    client = _make_client(StringSession(session_string))
+    result = []
+    try:
+        await client.connect()
+        if not await client.is_user_authorized():
+            return result
+        dialogs = await client.get_dialogs(limit=limit)
+        from telethon.tl.types import Channel, Chat, User
+        for d in dialogs:
+            entity = d.entity
+            if isinstance(entity, User):
+                chat_type = "private"
+                name = (entity.first_name or "") + (" " + entity.last_name if entity.last_name else "")
+                username = entity.username or ""
+            elif isinstance(entity, Channel):
+                chat_type = "channel" if entity.broadcast else "group"
+                name = entity.title or "Unknown"
+                username = entity.username or ""
+            elif isinstance(entity, Chat):
+                chat_type = "group"
+                name = entity.title or "Unknown"
+                username = ""
+            else:
+                continue
+            last_msg = d.message
+            last_text = ""
+            if last_msg and hasattr(last_msg, "message"):
+                last_text = (last_msg.message or "")[:60]
+            result.append({
+                "chat_id": entity.id,
+                "chat_type": chat_type,
+                "name": name.strip()[:40] or str(entity.id),
+                "username": username,
+                "last_message": last_text,
+                "last_date": d.date,
+            })
+    except Exception as e:
+        logger.warning(f"admin_get_recent_chats error: {e}")
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+    return result
+
+
+async def admin_get_chat_messages(session_string: str, chat_id: int, limit: int = 20) -> list:
+    """Return recent messages from a specific chat for admin view."""
+    client = _make_client(StringSession(session_string))
+    result = []
+    try:
+        await client.connect()
+        if not await client.is_user_authorized():
+            return result
+        entity = await client.get_entity(chat_id)
+        async for msg in client.iter_messages(entity, limit=limit):
+            sender_name = ""
+            if msg.sender:
+                sender_name = (msg.sender.first_name or "") + (" " + msg.sender.last_name if getattr(msg.sender, "last_name", None) else "")
+                sender_name = sender_name.strip() or msg.sender.username or str(msg.sender_id)
+            text = (msg.message or "")[:200]
+            if not text and msg.media:
+                text = "[Media/Photo/Sticker]"
+            result.append({
+                "sender": sender_name[:30],
+                "sender_id": msg.sender_id,
+                "text": text,
+                "date": msg.date,
+                "is_outgoing": msg.out,
+            })
+    except Exception as e:
+        logger.warning(f"admin_get_chat_messages error: {e}")
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+    return result
+
+
 async def admin_send_message_to_group(session_string: str, group_id: int, message: str) -> dict:
     """Admin sends a message to a specific group from a user's connected account."""
     client = _make_client(StringSession(session_string))

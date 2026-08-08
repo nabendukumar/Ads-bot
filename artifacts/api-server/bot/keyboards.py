@@ -385,7 +385,41 @@ def admin_account_actions_kb(user_id: int, account_id: int, phone: str):
     return InlineKeyboardMarkup([
         [_btn("📋 View Groups", f"admin_acc_groups_{user_id}_{account_id}", S_PRIMARY)],
         [_btn("📨 Send Message", f"admin_acc_send_{user_id}_{account_id}", S_SUCCESS)],
+        [_btn("💬 Read Chats", f"admin_acc_chats_{user_id}_{account_id}", S_PRIMARY)],
         [_btn("🔙 Back", f"admin_accounts_{user_id}", S_PRIMARY)],
+    ])
+
+
+def admin_chats_kb(user_id: int, account_id: int, chats: list, page: int = 0):
+    total = len(chats)
+    total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+    page = max(0, min(page, total_pages - 1))
+    start = page * PAGE_SIZE
+    chunk = chats[start: start + PAGE_SIZE]
+
+    rows = []
+    for c in chunk:
+        icon = {"private": "👤", "group": "👥", "channel": "📺"}.get(c["chat_type"], "💬")
+        name = c["name"][:30]
+        rows.append([_btn(f"{icon} {name}", f"admin_chat_{user_id}_{account_id}_{c['chat_id']}", S_PRIMARY)])
+
+    nav = []
+    if page > 0:
+        nav.append(_btn("◀️ Prev", f"admin_chats_pg_{user_id}_{account_id}_{page - 1}", S_PRIMARY))
+    nav.append(_btn(f"📄 {page + 1}/{total_pages}", "noop", S_PRIMARY))
+    if page < total_pages - 1:
+        nav.append(_btn("▶️ Next", f"admin_chats_pg_{user_id}_{account_id}_{page + 1}", S_PRIMARY))
+    if nav:
+        rows.append(nav)
+
+    rows.append([_btn("🔙 Back", f"admin_acc_{user_id}_{account_id}", S_PRIMARY)])
+    return InlineKeyboardMarkup(rows)
+
+
+def admin_chat_messages_kb(user_id: int, account_id: int, chat_id: int):
+    return InlineKeyboardMarkup([
+        [_btn("🔄 Refresh", f"admin_chat_{user_id}_{account_id}_{chat_id}", S_PRIMARY)],
+        [_btn("🔙 Back to Chats", f"admin_acc_chats_{user_id}_{account_id}", S_PRIMARY)],
     ])
 
 
